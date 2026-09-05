@@ -1,1 +1,69 @@
-# TODO: get nextjs, fastapi, postgres running
+# Dev: single command -> `docker compose up --build`
+# Ports shifted to 5433/8000/3000 host-side to avoid local conflicts.
+services:
+  twitter-db:
+    image: postgres:17
+    container_name: twitter-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flock}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flockpw}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-flockdb}
+    volumes:
+      - ./.data/postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${TWITTER_DB_PORT:-5432}:5432"
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -U $$POSTGRES_USER -d $$POSTGRES_DB -c 'SELECT 1' > /dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  twitter-backend:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+      target: runner
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://flock:flockpw@twitter-db:5432/flockdb}
+      POSTGRES_HOST: twitter-db
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./backend/app:/app/app
+    ports:
+      - "${TWITTER_BACKEND_PORT:-8000}:8000"
+    depends_on:
+      twitter-db:
+        condition: service_healthy
+
+  twitter-frontend:
+    build:
+      context: ./frontend
+      dockerfile: docker/Dockerfile.prod
+      args:
+        - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      - BACKEND_API_URL=${BACKEND_API_URL:-http://twitter-backend:8000}
+      - BACKEND_SECRET_KEY=${BACKEND_SECRET_KEY}
+      - NODE_ENV=${NODE_ENV:-production}
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    ports:
+      - "${TWITTER_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - twitter-backend
+
+networks:
+  twitter-network:
+    driver: bridge

@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# theFlock-twitter frontend dev — Next 16.3.4 / React 19 / pnpm 10.32.1 on Node 24-alpine.
+# Standalone file (no targets). Source is mounted from compose — image only installs deps.
+
+FROM node:24-alpine AS base
+RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 NODE_ENV=development
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install
+
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["entrypoint.sh"]
+EXPOSE 3000
+CMD ["pnpm", "dev", "--turbopack"]
