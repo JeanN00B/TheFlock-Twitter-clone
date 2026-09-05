@@ -3,11 +3,14 @@
 # Standalone file (no targets). Source is mounted from compose — image only installs deps.
 
 FROM node:24-alpine AS base
+# Alpine is musl: provides the ld-linux shim for any transitive gnu-only
+# (@next/swc-linux-x64-musl) instead of the host's glibc-only tree.
+RUN apk add --no-cache libc6-compat
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1 NODE_ENV=development
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml postcss.config.mjs next.config.ts tsconfig.json ./
 RUN pnpm install
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

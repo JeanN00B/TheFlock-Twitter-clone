@@ -1,18 +1,23 @@
-# Dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build`
-# Overrides prod base with dev images, live mounts, and local ports.
-services:
-  twitter-db:
-    extends: {file: docker-compose.yml, service: twitter-db}
+# Dev: `docker compose -f docker-compose.dev.yml up --build` (single -f via include).
+# Pulls base from docker-compose.yml, overrides with dev images, live mounts, and local ports.
+include:
+  - path: ./docker-compose.yml
 
+services:
   twitter-backend:
-    extends: {file: docker-compose.yml, service: twitter-backend}
     build: {context: ./backend, dockerfile: docker/Dockerfile, target: dev}
     volumes: [./backend/app:/app/app]
     command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   twitter-frontend:
-    extends: {file: docker-compose.yml, service: twitter-frontend}
     build: {context: ./frontend, dockerfile: docker/Dockerfile.dev}
     extra_hosts: ["host.docker.internal:host-gateway"]
-    volumes: [./frontend/src:/app/src, ./frontend/public:/app/public, /app/node_modules, /app/.next]
+    volumes: 
+    - ./frontend:/app
+    - ./frontend/src:/app/src
+    - ./frontend/public:/app/public
+    - ./frontend/.next:/app/.next
+    # Anonymous volume: keeps the image's Alpine (musl) node_modules instead of
+    # the host's glibc-only tree shadowing /app via the bind above.
+    - /app/node_modules
     command: ["pnpm", "dev", "--turbopack"]
