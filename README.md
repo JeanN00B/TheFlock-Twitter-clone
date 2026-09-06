@@ -37,6 +37,9 @@ Run the full stack with Docker — no local Postgres or Node needed.
 
    # Development version (recommended to start)
    docker compose -f docker-compose.dev.yml up --build
+
+   # Start development with testing DB
+   docker compose -f docker-compose.dev.yml --profile test up --build
    ```
   Note: `docker-compose.dev.yml` uses top-level `include` to pull `docker-compose.yml`, so the single `-f` form above is standalone. The old merged `-f docker-compose.yml -f docker-compose.dev.yml` form still parses but is now redundant.
 

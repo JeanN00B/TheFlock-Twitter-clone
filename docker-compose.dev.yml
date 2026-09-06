@@ -21,3 +21,33 @@ services:
     # the host's glibc-only tree shadowing /app via the bind above.
     - /app/node_modules
     command: ["pnpm", "dev", "--turbopack"]
+
+  # Disposable WU3 integration DB, isolated from dev twitter-db.
+  # Start: `docker compose -f docker-compose.dev.yml --profile test up --build twitter-testing-db`.
+  # Host URL for pytest: `TEST_DATABASE_URL=postgresql+psycopg://flock:flockpw@localhost:5434/flockdb`.
+  twitter-testing-db:
+    image: postgres:17
+    container_name: twitter-testing-db
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flock}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flockpw}
+      POSTGRES_DB: ${POSTGRES_DB:-flockdb}
+    volumes:
+      - ./.data/postgres_test_data:/var/lib/postgresql/data
+    ports:
+      - "${TWITTER_TEST_DB_PORT:-5434}:5432"
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -U $$POSTGRES_USER -d $$POSTGRES_DB -c 'SELECT 1' > /dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
