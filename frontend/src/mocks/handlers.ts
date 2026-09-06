@@ -61,6 +61,35 @@ export function __resetTweets(): void {
   tweetSeq = 0;
 }
 
+/** S3: in-memory follows (follower -> followees). Reset per test; login stand-in and tweets above untouched. */
+const follows = new Map<string, Set<string>>();
+
+/** Test-only reset for the S3 follow store. */
+export function __resetFollows(): void {
+  follows.clear();
+}
+
+/** Number of session users currently following `username`. */
+function followersOf(username: string): number {
+  let count = 0;
+  for (const followees of follows.values()) {
+    if (followees.has(username)) count += 1;
+  }
+  return count;
+}
+
+/** Public user for a profile: known account, else a synthetic stand-in. */
+function profileUser(username: string): User {
+  const account = accounts.get(username.toLowerCase());
+  if (account !== undefined) return publicUser(account);
+  return {
+    id: `u-${username.toLowerCase()}`,
+    username,
+    bio: null,
+    avatarUrl: null,
+  };
+}
+
 /** Username behind the PROVISIONAL session stand-in, or null when logged out. */
 function currentSessionUsername(): string | null {
   if (sessionStandIn === null) return null;
@@ -150,5 +179,61 @@ export const handlers = [
     };
     tweets.unshift(tweet);
     return HttpResponse.json(tweet, { status: 201 });
+  }),
+
+  http.get("*/profile/:username", ({ params }) => {
+    const { username: sessionUser, response } = requireSession();
+    if (response !== null) return response;
+    if (sessionUser === null) throw new Error("unreachable");
+    const username = String(params.username ?? "");
+    if (username.trim() === "") {
+      return HttpResponse.json({ detail: "Not found" }, { status: 404 });
+    }
+    const followees = follows.get(sessionUser) ?? new Set<string>();
+    return HttpResponse.json({
+      user: profileUser(username),
+      following: followees.has(username),
+      followersCount: followersOf(username),
+      followingCount: (follows.get(username) ?? new Set<string>()).size,
+    });
+  }),
+
+  http.post("*/follow", async ({ request }) => {
+    const { username: sessionUser, response } = requireSession();
+    if (response !== null) return response;
+    if (sessionUser === null) throw new Error("unreachable");
+    const body = (await request.json()) as {
+      username?: unknown;
+      following?: unknown;
+    };
+    if (
+      typeof body.username !== "string" ||
+      body.username.trim() === "" ||
+      typeof body.following !== "boolean"
+    ) {
+      return HttpResponse.json(
+        { detail: "username and following are required" },
+        { status: 422 },
+      );
+    }
+    const target = body.username;
+    if (target.toLowerCase() === sessionUser.toLowerCase()) {
+      return HttpResponse.json(
+        { detail: "Cannot follow yourself" },
+        { status: 422 },
+      );
+    }
+    let followees = follows.get(sessionUser);
+    if (followees === undefined) {
+      followees = new Set<string>();
+      follows.set(sessionUser, followees);
+    }
+    if (body.following) followees.add(target);
+    else followees.delete(target);
+    return HttpResponse.json({
+      username: target,
+      following: followees.has(target),
+      followersCount: followersOf(target),
+    });
   }),
 ];

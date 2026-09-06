@@ -1,8 +1,11 @@
 import {
   ApiError,
   type BackendGateway,
+  type FollowState,
   type LoginInput,
   type PostTweetInput,
+  type ProfileView,
+  type ToggleFollowInput,
   type Tweet,
   type User,
 } from "./port";
@@ -44,6 +47,78 @@ function mapTweet(raw: unknown): Tweet {
     return raw as Tweet;
   }
   throw new ApiError(500, "Unexpected tweet shape");
+}
+
+/**
+ * Backend-to-port mapping for users, isolated here like mapTweet so a
+ * future shape change is a mechanical swap.
+ */
+function mapUser(raw: unknown): User {
+  if (raw !== null && typeof raw === "object") {
+    const user = raw as {
+      id?: unknown;
+      username?: unknown;
+      bio?: unknown;
+      avatarUrl?: unknown;
+    };
+    if (
+      typeof user.id === "string" &&
+      typeof user.username === "string" &&
+      (user.bio === undefined ||
+        user.bio === null ||
+        typeof user.bio === "string") &&
+      (user.avatarUrl === undefined ||
+        user.avatarUrl === null ||
+        typeof user.avatarUrl === "string")
+    ) {
+      return {
+        id: user.id,
+        username: user.username,
+        bio: typeof user.bio === "string" ? user.bio : null,
+        avatarUrl: typeof user.avatarUrl === "string" ? user.avatarUrl : null,
+      };
+    }
+  }
+  throw new ApiError(500, "Unexpected user shape");
+}
+
+/**
+ * Backend-to-port mapping for follow-state changes, isolated here.
+ * Rejects anything that is not a well-formed FollowState.
+ */
+function mapFollowState(raw: unknown): FollowState {
+  if (
+    raw !== null &&
+    typeof raw === "object" &&
+    typeof (raw as { username?: unknown }).username === "string" &&
+    typeof (raw as { following?: unknown }).following === "boolean" &&
+    typeof (raw as { followersCount?: unknown }).followersCount === "number"
+  ) {
+    return raw as FollowState;
+  }
+  throw new ApiError(500, "Unexpected follow shape");
+}
+
+/**
+ * Backend-to-port mapping for profiles, isolated here.
+ * Rejects anything that is not a well-formed ProfileView.
+ */
+function mapProfile(raw: unknown): ProfileView {
+  if (
+    raw !== null &&
+    typeof raw === "object" &&
+    typeof (raw as { following?: unknown }).following === "boolean" &&
+    typeof (raw as { followersCount?: unknown }).followersCount === "number" &&
+    typeof (raw as { followingCount?: unknown }).followingCount === "number"
+  ) {
+    return {
+      user: mapUser((raw as { user?: unknown }).user),
+      following: (raw as { following: boolean }).following,
+      followersCount: (raw as { followersCount: number }).followersCount,
+      followingCount: (raw as { followingCount: number }).followingCount,
+    };
+  }
+  throw new ApiError(500, "Unexpected profile shape");
 }
 
 /**
@@ -104,6 +179,20 @@ export function createBackendGateway(
       if (!Array.isArray(raw))
         throw new ApiError(500, "Unexpected tweet shape");
       return raw.map(mapTweet);
+    },
+    async profile(username: string): Promise<ProfileView> {
+      const raw = await request<unknown>(
+        `/profile/${encodeURIComponent(username)}`,
+        { method: "GET" },
+      );
+      return mapProfile(raw);
+    },
+    async setFollow(input: ToggleFollowInput): Promise<FollowState> {
+      const raw = await request<unknown>("/follow", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      return mapFollowState(raw);
     },
   };
 }
