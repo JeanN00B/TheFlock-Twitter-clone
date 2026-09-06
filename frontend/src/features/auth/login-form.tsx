@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import { LogInIcon } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
@@ -85,6 +86,15 @@ export function LoginForm({ className }: { className?: string }) {
                 <LogInIcon />
                 {pending ? "Logging in…" : "Log in"}
               </Button>
+              <p className="text-center text-sm text-muted-foreground">
+                Don&apos;t have an account?{" "}
+                <Link
+                  href="/register"
+                  className="font-medium text-foreground underline underline-offset-4"
+                >
+                  Create an account
+                </Link>
+              </p>
             </div>
           </form>
           <div className="relative hidden bg-muted md:block">

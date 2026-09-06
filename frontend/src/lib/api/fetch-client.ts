@@ -5,6 +5,8 @@ import {
   type LoginInput,
   type PostTweetInput,
   type ProfileView,
+  type RegisterInput,
+  type RegistrationResult,
   type ToggleFollowInput,
   type Tweet,
   type User,
@@ -18,17 +20,66 @@ export interface GatewayHooks {
   onSessionEnd?: () => void;
 }
 
-async function parseDetail(res: Response): Promise<string | undefined> {
+interface ParsedError {
+  detail?: string;
+  code?: string;
+  fields?: Record<string, string>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function stringFields(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const fields: Record<string, string> = {};
+  for (const [key, field] of Object.entries(value)) {
+    if (typeof field === "string") fields[key] = field;
+  }
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
+async function parseError(res: Response): Promise<ParsedError> {
   try {
     const body: unknown = await res.json();
-    if (body !== null && typeof body === "object" && "detail" in body) {
-      const detail = (body as { detail: unknown }).detail;
-      if (typeof detail === "string") return detail;
-    }
+    if (!isRecord(body)) return {};
+
+    const nested = isRecord(body.error) ? body.error : undefined;
+    return {
+      detail: typeof body.detail === "string" ? body.detail : undefined,
+      code: nested && typeof nested.code === "string" ? nested.code : undefined,
+      fields: nested ? stringFields(nested.fields) : undefined,
+    };
   } catch {
     // Non-JSON error body — fall back to status text below.
+    return {};
   }
-  return undefined;
+}
+
+/**
+ * Backend-to-port mapping for registration, isolated here so backend
+ * snake_case never leaks through the frontend port.
+ */
+function mapRegistration(raw: unknown): RegistrationResult {
+  if (
+    isRecord(raw) &&
+    typeof raw.id === "string" &&
+    typeof raw.username === "string" &&
+    typeof raw.display_name === "string" &&
+    typeof raw.email === "string" &&
+    typeof raw.created_at === "string" &&
+    typeof raw.updated_at === "string"
+  ) {
+    return {
+      id: raw.id,
+      username: raw.username,
+      displayName: raw.display_name,
+      email: raw.email,
+      createdAt: raw.created_at,
+      updatedAt: raw.updated_at,
+    };
+  }
+  throw new ApiError(500, "Unexpected registration shape");
 }
 
 /**
@@ -140,20 +191,31 @@ export function createBackendGateway(
       headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
     });
     if (res.status === 401) {
+      const error = await parseError(res);
       hooks.onSessionEnd?.();
-      throw new ApiError(401, (await parseDetail(res)) ?? "Unauthenticated");
+      throw new ApiError(401, error.detail ?? "Unauthenticated", error);
     }
     if (!res.ok) {
-      throw new ApiError(
-        res.status,
-        (await parseDetail(res)) ?? res.statusText,
-      );
+      const error = await parseError(res);
+      throw new ApiError(res.status, error.detail ?? res.statusText, error);
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
 
   return {
+    async register(input: RegisterInput): Promise<RegistrationResult> {
+      const raw = await request<unknown>("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({
+          email: input.email,
+          username: input.username,
+          display_name: input.displayName,
+          password: input.password,
+        }),
+      });
+      return mapRegistration(raw);
+    },
     login(input: LoginInput): Promise<User> {
       return request<User>("/auth/login", {
         method: "POST",

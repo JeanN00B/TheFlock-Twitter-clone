@@ -49,6 +49,14 @@ beforeEach(() => {
 });
 
 describe("login page seam (S1)", () => {
+  it("offers a link to account registration", () => {
+    renderLogin();
+
+    expect(
+      screen.getByRole("link", { name: /create an account/i }),
+    ).toHaveAttribute("href", "/register");
+  });
+
   it("valid credentials establish the session and navigate home", async () => {
     renderLogin();
     submit("alice", "password123");

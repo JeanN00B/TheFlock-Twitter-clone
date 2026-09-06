@@ -14,6 +14,22 @@ export interface LoginInput {
   password: string;
 }
 
+export interface RegisterInput {
+  email: string;
+  username: string;
+  displayName: string;
+  password: string;
+}
+
+export interface RegistrationResult {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** PROVISIONAL tweet shape (per design; mapping isolated in the adapter). */
 export interface Tweet {
   id: string;
@@ -52,17 +68,27 @@ export interface ProfileView {
 export class ApiError extends Error {
   readonly status: number;
   readonly detail?: string;
+  readonly code?: string;
+  readonly fields?: Record<string, string>;
 
-  constructor(status: number, detail?: string) {
+  constructor(
+    status: number,
+    detail?: string,
+    options?: { code?: string; fields?: Record<string, string> },
+  ) {
     super(detail ?? `Request failed with status ${status}`);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.code = options?.code;
+    this.fields = options?.fields;
   }
 }
 
 /** Single gateway port. S1 owns login/logout; S2/S3 add tweet/follow methods. */
 export interface BackendGateway {
+  /** POST /auth/register — creates an account without establishing a session. */
+  register(input: RegisterInput): Promise<RegistrationResult>;
   /** POST /auth/login — resolves with the user on success, rejects ApiError(401) otherwise. */
   login(input: LoginInput): Promise<User>;
   /** POST /auth/logout — ends the cookie session. */

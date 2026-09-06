@@ -29,6 +29,88 @@ const accounts = new Map<string, Account>([
   ],
 ]);
 
+interface RegistrationAccount {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  password: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const initialRegistrationAccounts: RegistrationAccount[] = [
+  {
+    id: "00000000-0000-4000-8000-000000000001",
+    username: "alice",
+    displayName: "Alice",
+    email: "alice@example.com",
+    password: "password123",
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+  },
+];
+
+const registrationAccounts = new Map<string, RegistrationAccount>(
+  initialRegistrationAccounts.map((account): [string, RegistrationAccount] => [
+    account.username,
+    account,
+  ]),
+);
+
+const REGISTRATION_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REGISTRATION_USERNAME_PATTERN = /^[a-z0-9_]{3,15}$/;
+
+function registrationStringLength(value: string): number {
+  return [...value].length;
+}
+
+function isValidRegistrationEmail(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const canonical = value.trim().toLowerCase();
+  return (
+    registrationStringLength(canonical) > 0 &&
+    registrationStringLength(canonical) <= 254 &&
+    REGISTRATION_EMAIL_PATTERN.test(canonical)
+  );
+}
+
+function isValidRegistrationUsername(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[\x00-\x7f]*$/.test(value)) return false;
+  return REGISTRATION_USERNAME_PATTERN.test(value.trim().toLowerCase());
+}
+
+function isValidRegistrationDisplayName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    registrationStringLength(value.trim()) >= 1 &&
+    registrationStringLength(value.trim()) <= 50
+  );
+}
+
+function isValidRegistrationPassword(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    registrationStringLength(value) >= 8 &&
+    registrationStringLength(value) <= 128
+  );
+}
+
+function isValidRegistrationField(key: string, value: unknown): boolean {
+  switch (key) {
+    case "email":
+      return isValidRegistrationEmail(value);
+    case "username":
+      return isValidRegistrationUsername(value);
+    case "display_name":
+      return isValidRegistrationDisplayName(value);
+    case "password":
+      return isValidRegistrationPassword(value);
+    default:
+      return false;
+  }
+}
+
 let sessionStandIn: string | null = null;
 
 /** Test-only accessor for the PROVISIONAL stand-in (never ship to prod code). */
@@ -39,6 +121,14 @@ export function __getAuthStandIn(): string | null {
 /** Test-only reset for the PROVISIONAL stand-in. */
 export function __resetAuthStandIn(): void {
   sessionStandIn = null;
+}
+
+/** Test-only reset for stateful registration records. */
+export function __resetRegistration(): void {
+  registrationAccounts.clear();
+  for (const account of initialRegistrationAccounts) {
+    registrationAccounts.set(account.username, account);
+  }
 }
 
 function publicUser(account: Account): User {
@@ -113,8 +203,73 @@ function requireSession() {
   return { username, response: null };
 }
 
-/** S1: login/logout. S2: tweet timeline/create. S3 appends follow handlers. */
+/** S1: login/logout. Registration remains explicitly signed out. */
 export const handlers = [
+  http.post("*/auth/register", async ({ request }) => {
+    const body: unknown = await request.json();
+    const expectedKeys = ["email", "username", "display_name", "password"];
+    const fields: Record<string, string> = {};
+
+    if (body === null || typeof body !== "object") {
+      for (const key of expectedKeys) fields[key] = "invalid";
+    } else {
+      const record = body as Record<string, unknown>;
+      for (const key of expectedKeys) {
+        if (!isValidRegistrationField(key, record[key])) {
+          fields[key] = "invalid";
+        }
+      }
+      for (const key of Object.keys(record)) {
+        if (!expectedKeys.includes(key)) fields[key] = "invalid";
+      }
+    }
+
+    const record = body as Record<string, unknown>;
+    if (Object.keys(fields).length > 0) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields } },
+        { status: 422 },
+      );
+    }
+
+    const email = (record.email as string).trim().toLowerCase();
+    const username = (record.username as string).trim().toLowerCase();
+    const conflicts: Record<string, string> = {};
+    for (const account of registrationAccounts.values()) {
+      if (account.email === email) conflicts.email = "already_exists";
+      if (account.username === username) conflicts.username = "already_exists";
+    }
+    if (Object.keys(conflicts).length > 0) {
+      return HttpResponse.json(
+        { error: { code: "conflict", fields: conflicts } },
+        { status: 409 },
+      );
+    }
+
+    const now = new Date().toISOString();
+    const account: RegistrationAccount = {
+      id: crypto.randomUUID(),
+      username,
+      displayName: (record.display_name as string).trim(),
+      email,
+      password: record.password as string,
+      createdAt: now,
+      updatedAt: now,
+    };
+    registrationAccounts.set(account.username, account);
+    return HttpResponse.json(
+      {
+        id: account.id,
+        username: account.username,
+        display_name: account.displayName,
+        email: account.email,
+        created_at: account.createdAt,
+        updated_at: account.updatedAt,
+      },
+      { status: 201 },
+    );
+  }),
+
   http.post("*/auth/login", async ({ request }) => {
     const body = (await request.json()) as {
       username?: string;
