@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     """Runtime configuration for the backend application."""
 
     database_url: str
+    auto_migrate: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

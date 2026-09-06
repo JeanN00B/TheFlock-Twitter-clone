@@ -16,10 +16,14 @@ if ! nc -z "$HOST" "$PORT"; then
   exit 1
 fi
 
-if [ -f alembic.ini ] && command -v alembic >/dev/null 2>&1; then
-  alembic upgrade head
+if [ "${AUTO_MIGRATE:-false}" = "true" ]; then
+  if [ -f alembic.ini ] && command -v alembic >/dev/null 2>&1; then
+    alembic upgrade head
+  else
+    echo "skipping migrations (no alembic.ini yet)"
+  fi
 else
-  echo "skipping migrations (no alembic.ini yet)"
+  echo "skipping migrations (AUTO_MIGRATE is not true)"
 fi
 
 exec "$@"

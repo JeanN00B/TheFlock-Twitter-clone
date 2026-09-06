@@ -6,6 +6,8 @@ include:
 services:
   twitter-backend:
     build: {context: ./backend, dockerfile: docker/Dockerfile, target: dev}
+    environment:
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
     volumes: [./backend/app:/app/app]
     command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
