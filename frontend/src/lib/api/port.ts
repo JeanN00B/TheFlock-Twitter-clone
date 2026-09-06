@@ -14,6 +14,18 @@ export interface LoginInput {
   password: string;
 }
 
+/** PROVISIONAL tweet shape (per design; mapping isolated in the adapter). */
+export interface Tweet {
+  id: string;
+  authorUsername: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface PostTweetInput {
+  text: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly detail?: string;
@@ -32,4 +44,13 @@ export interface BackendGateway {
   login(input: LoginInput): Promise<User>;
   /** POST /auth/logout — ends the cookie session. */
   logout(): Promise<void>;
+  /**
+   * POST /tweet — creates a tweet over the cookie session.
+   * Rejects ApiError(401) when logged out, ApiError(422) when the
+   * server refuses the text (over 280 chars, empty). The server is
+   * the authority; the client-side 280 rule is UX only.
+   */
+  createTweet(input: PostTweetInput): Promise<Tweet>;
+  /** GET /tweet — reads the timeline over the cookie session. */
+  timeline(): Promise<Tweet[]>;
 }

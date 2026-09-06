@@ -2,6 +2,8 @@ import {
   ApiError,
   type BackendGateway,
   type LoginInput,
+  type PostTweetInput,
+  type Tweet,
   type User,
 } from "./port";
 
@@ -24,6 +26,24 @@ async function parseDetail(res: Response): Promise<string | undefined> {
     // Non-JSON error body — fall back to status text below.
   }
   return undefined;
+}
+
+/**
+ * Backend-to-port mapping, isolated here so a future shape change is a
+ * mechanical swap. Rejects anything that is not a well-formed Tweet.
+ */
+function mapTweet(raw: unknown): Tweet {
+  if (
+    raw !== null &&
+    typeof raw === "object" &&
+    typeof (raw as { id?: unknown }).id === "string" &&
+    typeof (raw as { authorUsername?: unknown }).authorUsername === "string" &&
+    typeof (raw as { text?: unknown }).text === "string" &&
+    typeof (raw as { createdAt?: unknown }).createdAt === "string"
+  ) {
+    return raw as Tweet;
+  }
+  throw new ApiError(500, "Unexpected tweet shape");
 }
 
 /**
@@ -71,6 +91,19 @@ export function createBackendGateway(
         body: JSON.stringify({}),
       });
       hooks.onSessionEnd?.();
+    },
+    async createTweet(input: PostTweetInput): Promise<Tweet> {
+      const raw = await request<unknown>("/tweet", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      return mapTweet(raw);
+    },
+    async timeline(): Promise<Tweet[]> {
+      const raw = await request<unknown>("/tweet", { method: "GET" });
+      if (!Array.isArray(raw))
+        throw new ApiError(500, "Unexpected tweet shape");
+      return raw.map(mapTweet);
     },
   };
 }

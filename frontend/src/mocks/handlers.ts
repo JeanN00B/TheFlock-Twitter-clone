@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import type { User } from "@/lib/api/port";
+import type { Tweet, User } from "@/lib/api/port";
 
 /**
  * PROVISIONAL cookie-session stand-in (mock-first, MSW only).
@@ -50,7 +50,41 @@ function publicUser(account: Account): User {
   };
 }
 
-/** S1 only: login/logout. S2/S3 append tweet/follow handlers here. */
+/** S2: in-memory tweets. Reset per test; login stand-in above untouched. */
+const TWEET_MAX_LENGTH = 280;
+const tweets: Tweet[] = [];
+let tweetSeq = 0;
+
+/** Test-only reset for the S2 tweet store. */
+export function __resetTweets(): void {
+  tweets.length = 0;
+  tweetSeq = 0;
+}
+
+/** Username behind the PROVISIONAL session stand-in, or null when logged out. */
+function currentSessionUsername(): string | null {
+  if (sessionStandIn === null) return null;
+  const value = sessionStandIn.split("=").slice(1).join("=");
+  if (!value.endsWith("-session")) return null;
+  const username = value.slice(0, "-session".length * -1);
+  return username === "" ? null : username;
+}
+
+function requireSession() {
+  const username = currentSessionUsername();
+  if (username === null) {
+    return {
+      username: null as string | null,
+      response: HttpResponse.json(
+        { detail: "Unauthenticated" },
+        { status: 401 },
+      ),
+    };
+  }
+  return { username, response: null };
+}
+
+/** S1: login/logout. S2: tweet timeline/create. S3 appends follow handlers. */
 export const handlers = [
   http.post("*/auth/login", async ({ request }) => {
     const body = (await request.json()) as {
@@ -82,4 +116,39 @@ export const handlers = [
   }),
 
   // NOTE: no GET /auth/me handler by decision — 401-anywhere is the guard.
+
+  http.get("*/tweet", () => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    return HttpResponse.json(tweets);
+  }),
+
+  http.post("*/tweet", async ({ request }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const body = (await request.json()) as { text?: unknown };
+    // Server is the authority on the 280 rule: the client blocks first,
+    // but a bypassed client still gets 422 here.
+    if (
+      typeof body.text !== "string" ||
+      body.text.trim().length === 0 ||
+      body.text.length > TWEET_MAX_LENGTH
+    ) {
+      return HttpResponse.json(
+        { detail: "Tweet must be 1-280 characters" },
+        { status: 422 },
+      );
+    }
+    tweetSeq += 1;
+    const tweet: Tweet = {
+      id: `t-${tweetSeq}`,
+      authorUsername: username,
+      text: body.text,
+      createdAt: new Date().toISOString(),
+    };
+    tweets.unshift(tweet);
+    return HttpResponse.json(tweet, { status: 201 });
+  }),
 ];
