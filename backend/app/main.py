@@ -1,13 +1,26 @@
 """theFlock-twitter API composition root."""
 
+import os
+
 from fastapi import FastAPI, Request, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.users.infrastructure.registration_router import router as registration_router
 
+# Browser origin for host `pnpm dev` / Compose frontend (credentials: include).
+_FRONTEND_ORIGIN = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+
 app = FastAPI(title="theFlock-twitter API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[_FRONTEND_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(registration_router)
 
 
