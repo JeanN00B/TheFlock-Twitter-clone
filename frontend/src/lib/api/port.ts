@@ -3,9 +3,21 @@
 export interface User {
   id: string;
   username: string;
+  /** Shown in the header as the display name; never render `email` (see below). */
+  displayName: string;
+  createdAt: string;
+  updatedAt: string;
   bio: string | null;
   avatarUrl: string | null;
 }
+
+/**
+ * Email decision (documented): GET /auth/me also returns `email`, but the
+ * adapter drops it at the boundary and it never enters this port. The
+ * header renders displayName/@username only, and keeping PII out of the
+ * PUBLIC sessionStorage mirror minimizes exposure. Revisit only if a
+ * rendered surface genuinely needs the address.
+ */
 
 export type SessionView = { user: User } | null;
 
@@ -96,6 +108,15 @@ export interface BackendGateway {
    * ApiError(403) origin_not_allowed.
    */
   login(input: LoginInput): Promise<void>;
+  /**
+   * GET /auth/me — reads the session identity over the cookie session.
+   * Maps the backend snake_case user (display_name, created_at,
+   * updated_at) to camelCase; `email` is dropped at the adapter boundary
+   * (see above). Rejects ApiError(401) unauthenticated when logged out —
+   * central session-end still applies; callers decide the outcome
+   * (login-form treats it as failure, the shell treats it as signed-out).
+   */
+  me(): Promise<User>;
   /** POST /auth/logout — ends the cookie session. */
   logout(): Promise<void>;
   /**

@@ -8,8 +8,8 @@ import type { Tweet, User } from "@/lib/api/port";
  * MSW emulates the cookie with an in-memory stand-in plus a `Set-Cookie`
  * header on the mocked response. Swap stays mechanical: point
  * NEXT_PUBLIC_API_URL at the real backend and delete this file's usages.
- * There is intentionally NO `GET /auth/me` handler — a 401 on any
- * request IS the guard (session clears and the app routes to /login).
+ * GET /auth/me mirrors the backend identity read over the cookie
+ * stand-in below (logged out → 401 {error:{code:unauthenticated}}).
  */
 const SESSION_COOKIE = "flock_session";
 
@@ -18,12 +18,17 @@ interface Account extends User {
   password: string;
 }
 
+const IDENTITY_CREATED_AT = "2024-01-01T00:00:00.000Z";
+
 const accounts = new Map<string, Account>([
   [
     "alice",
     {
       id: "u-alice",
       username: "alice",
+      displayName: "Alice",
+      createdAt: IDENTITY_CREATED_AT,
+      updatedAt: IDENTITY_CREATED_AT,
       email: "alice@example.com",
       bio: "Test user",
       avatarUrl: null,
@@ -152,6 +157,9 @@ function publicUser(account: Account): User {
   return {
     id: account.id,
     username: account.username,
+    displayName: account.displayName,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
     bio: account.bio,
     avatarUrl: account.avatarUrl,
   };
@@ -192,6 +200,9 @@ function profileUser(username: string): User {
   return {
     id: `u-${username.toLowerCase()}`,
     username,
+    displayName: username,
+    createdAt: IDENTITY_CREATED_AT,
+    updatedAt: IDENTITY_CREATED_AT,
     bio: null,
     avatarUrl: null,
   };
@@ -358,7 +369,27 @@ export const handlers = [
     );
   }),
 
-  // NOTE: no GET /auth/me handler by decision — 401-anywhere is the guard.
+  // GET /auth/me mirrors the backend identity read: the snake_case user
+  // over the cookie stand-in, or 401 {error:{code:unauthenticated}} logged out.
+  http.get("*/auth/me", () => {
+    const username = currentSessionUsername();
+    const account =
+      username === null ? undefined : accounts.get(username.toLowerCase());
+    if (username === null || account === undefined) {
+      return HttpResponse.json(
+        { error: { code: "unauthenticated" } },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      id: account.id,
+      username: account.username,
+      display_name: account.displayName,
+      email: account.email,
+      created_at: account.createdAt,
+      updated_at: account.updatedAt,
+    });
+  }),
 
   http.get("*/tweet", () => {
     const { username, response } = requireSession();

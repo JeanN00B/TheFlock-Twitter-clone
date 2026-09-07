@@ -26,6 +26,9 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 const alice: User = {
   id: "u-alice",
   username: "alice",
+  displayName: "Alice",
+  createdAt: "2024-01-01T00:00:00.000Z",
+  updatedAt: "2024-01-01T00:00:00.000Z",
   bio: "Test user",
   avatarUrl: null,
 };

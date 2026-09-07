@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useSession } from "@/features/auth/session-store";
 import { ApiError } from "@/lib/api/port";
 
 const loginFieldLabels: Record<string, string> = {
@@ -26,6 +27,7 @@ function loginFieldMessage(field: string, code: string): string {
 
 export function LoginForm({ className }: { className?: string }) {
   const { gateway } = useApp();
+  const { setFromLogin } = useSession();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -39,10 +41,22 @@ export function LoginForm({ className }: { className?: string }) {
     setError(null);
     setFieldErrors({});
     try {
-      // Backend answers 204 empty: success carries no user body, the
-      // httpOnly cookie is the session. Navigate home on resolve.
+      // Backend answers login with 204 empty: success carries no user body,
+      // the httpOnly cookie is the session. Hydrate identity with me()
+      // before navigating so the shell renders signed-in on arrival.
       await gateway.login({ email: email.trim(), password });
-      router.push("/");
+      try {
+        const user = await gateway.me();
+        setFromLogin(user);
+        router.push("/");
+      } catch {
+        // Login already succeeded: a me() failure is never a credential
+        // error and never a redirect loop — stay on /login with the
+        // generic error (the central 401 wiring stays untouched).
+        const message = "Something went wrong. Please try again.";
+        setError(message);
+        toast.error(message);
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         const message = "Invalid email or password.";

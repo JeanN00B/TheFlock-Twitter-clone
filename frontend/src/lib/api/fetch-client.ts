@@ -102,33 +102,35 @@ function mapTweet(raw: unknown): Tweet {
 
 /**
  * Backend-to-port mapping for users, isolated here like mapTweet so a
- * future shape change is a mechanical swap.
+ * future shape change is a mechanical swap. Accepts the backend snake_case
+ * identity shape (GET /auth/me: display_name, created_at, updated_at) as
+ * well as the camelCase profile shape. `email` is intentionally dropped
+ * here and never enters the port (PII minimization — see port.ts).
  */
 function mapUser(raw: unknown): User {
-  if (raw !== null && typeof raw === "object") {
-    const user = raw as {
-      id?: unknown;
-      username?: unknown;
-      bio?: unknown;
-      avatarUrl?: unknown;
+  if (!isRecord(raw)) throw new ApiError(500, "Unexpected user shape");
+  const displayName = raw.displayName ?? raw.display_name;
+  const createdAt = raw.createdAt ?? raw.created_at;
+  const updatedAt = raw.updatedAt ?? raw.updated_at;
+  const avatarUrl = raw.avatarUrl ?? raw.avatar_url;
+  if (
+    typeof raw.id === "string" &&
+    typeof raw.username === "string" &&
+    typeof displayName === "string" &&
+    typeof createdAt === "string" &&
+    typeof updatedAt === "string" &&
+    (raw.bio === undefined || raw.bio === null || typeof raw.bio === "string") &&
+    (avatarUrl === undefined || avatarUrl === null || typeof avatarUrl === "string")
+  ) {
+    return {
+      id: raw.id,
+      username: raw.username,
+      displayName,
+      createdAt,
+      updatedAt,
+      bio: typeof raw.bio === "string" ? raw.bio : null,
+      avatarUrl: typeof avatarUrl === "string" ? avatarUrl : null,
     };
-    if (
-      typeof user.id === "string" &&
-      typeof user.username === "string" &&
-      (user.bio === undefined ||
-        user.bio === null ||
-        typeof user.bio === "string") &&
-      (user.avatarUrl === undefined ||
-        user.avatarUrl === null ||
-        typeof user.avatarUrl === "string")
-    ) {
-      return {
-        id: user.id,
-        username: user.username,
-        bio: typeof user.bio === "string" ? user.bio : null,
-        avatarUrl: typeof user.avatarUrl === "string" ? user.avatarUrl : null,
-      };
-    }
   }
   throw new ApiError(500, "Unexpected user shape");
 }
@@ -184,7 +186,11 @@ export function createBackendGateway(
 ): BackendGateway {
   const cleanBase = baseUrl.replace(/\/+$/, "");
 
-  async function request<T>(path: string, init: RequestInit): Promise<T> {
+  async function request<T>(
+    path: string,
+    init: RequestInit,
+    options?: { suppressSessionEnd?: boolean },
+  ): Promise<T> {
     const res = await fetch(`${cleanBase}${path}`, {
       ...init,
       credentials: "include",
@@ -192,7 +198,10 @@ export function createBackendGateway(
     });
     if (res.status === 401) {
       const error = await parseError(res);
-      hooks.onSessionEnd?.();
+      // Login-scoped suppression: the login 401 is form input feedback
+      // (wrong password), never a session end. All other requests keep
+      // the central 401 → clear + /login wiring.
+      if (!options?.suppressSessionEnd) hooks.onSessionEnd?.();
       throw new ApiError(401, error.detail ?? "Unauthenticated", error);
     }
     if (!res.ok) {
@@ -218,18 +227,33 @@ export function createBackendGateway(
     },
     /**
      * POST /auth/login over the cookie session. The backend answers 204
-     * empty, so success resolves without parsing a body. 401 stays central
-     * (session end); 403 origin_not_allowed passes through untouched — it is
-     * an origin denial, not a session end.
+     * empty, so success resolves without parsing a body. A 401 here is
+     * form feedback (invalid_credentials) and never fires the central
+     * session end — the form owns the error. 403 origin_not_allowed
+     * passes through untouched — it is an origin denial, not a session end.
      */
     async login(input: LoginInput): Promise<void> {
-      await request<unknown>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-          email: input.email,
-          password: input.password,
-        }),
-      });
+      await request<unknown>(
+        "/auth/login",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            email: input.email,
+            password: input.password,
+          }),
+        },
+        { suppressSessionEnd: true },
+      );
+    },
+    /**
+     * GET /auth/me over the cookie session. No suppression: a 401 keeps
+     * the central session-end wiring and surfaces ApiError(401)
+     * unauthenticated — callers decide (login-form treats it as failure,
+     * the shell treats it as signed-out).
+     */
+    async me(): Promise<User> {
+      const raw = await request<unknown>("/auth/me", { method: "GET" });
+      return mapUser(raw);
     },
     async logout(): Promise<void> {
       await request<unknown>("/auth/logout", {
