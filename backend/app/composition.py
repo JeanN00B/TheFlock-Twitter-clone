@@ -15,6 +15,7 @@ from app.auth.infrastructure.session_tokens import (
 )
 from app.infrastructure.database import get_db
 from app.tweets.application.create_tweet import CreateTweet
+from app.tweets.application.delete_tweet import DeleteTweet
 from app.tweets.application.list_tweet_feed import ListTweetFeed
 from app.tweets.infrastructure.tweet_repository import SQLAlchemyTweetRepository
 from app.tweets.infrastructure.tweet_router import build_tweet_router
@@ -88,7 +89,18 @@ def get_list_tweet_feed(session: Session = Depends(get_db)) -> ListTweetFeed:
     return ListTweetFeed(repository=SQLAlchemyTweetRepository(session))
 
 
+def get_delete_tweet(session: Session = Depends(get_db)) -> DeleteTweet:
+    """Provide one transaction-owning delete-tweet use case per request."""
+
+    return DeleteTweet(repository=SQLAlchemyTweetRepository(session), clock=SystemClock())
+
+
 current_user_dependency = build_current_user_dependency(get_session_access)
 login_router = build_login_router(get_login, get_session_cookie_secure)
 session_router = build_session_router(get_session_access, get_session_cookie_secure)
-tweet_router = build_tweet_router(get_create_tweet, get_list_tweet_feed, current_user_dependency)
+tweet_router = build_tweet_router(
+    get_create_tweet,
+    get_list_tweet_feed,
+    get_delete_tweet,
+    current_user_dependency,
+)

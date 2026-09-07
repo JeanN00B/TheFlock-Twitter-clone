@@ -7,7 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.tweets.application.create_tweet import CreateTweetCommand
-from app.tweets.application.errors import TweetValidationError
+from app.tweets.application.delete_tweet import DeleteTweetCommand
+from app.tweets.application.errors import TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeedQuery, TweetPage
 from app.tweets.application.ports import FeedCursor
 from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet
@@ -199,3 +200,65 @@ def test_feed_rejects_invalid_cursor_without_query(feed_client, query):
     assert response.status_code == 422
     assert response.json() == {"error": {"code": "validation_error", "fields": {"cursor": "invalid"}}}
     assert use_case.queries == []
+
+
+class RecordingDeleteTweet:
+    def __init__(self) -> None:
+        self.commands: list[DeleteTweetCommand] = []
+        self.error: Exception | None = None
+
+    def execute(self, command: DeleteTweetCommand) -> None:
+        self.commands.append(command)
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture()
+def delete_client():
+    from app.composition import current_user_dependency, get_delete_tweet
+    from app.main import app
+
+    use_case = RecordingDeleteTweet()
+    actor = PublicUser(ACTOR_ID, "private@example.com", "alice", "Alice Example", NOW, NOW)
+    app.dependency_overrides[get_delete_tweet] = lambda: use_case
+    app.dependency_overrides[current_user_dependency] = lambda: actor
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client, use_case
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_owner_returns_exact_empty_204(delete_client):
+    client, use_case = delete_client
+
+    response = client.delete(f"/tweets/{TWEET_ID}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert use_case.commands == [DeleteTweetCommand(tweet_id=TWEET_ID, requester_id=ACTOR_ID)]
+
+
+@pytest.mark.parametrize("tweet_id", ["not-a-uuid", "22222222222242228222222222222222", "22222222-2222-1222-8222-222222222222", "abcdefab-cdef-4abc-8def-abcdefabcdef".upper()])
+def test_delete_rejects_noncanonical_uuid_v4_without_calling_use_case(delete_client, tweet_id):
+    client, use_case = delete_client
+
+    response = client.delete(f"/tweets/{tweet_id}")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": "validation_error", "fields": {"tweet_id": "invalid"}}}
+    assert use_case.commands == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [(TweetForbidden(), 403, "forbidden"), (TweetNotFound(), 404, "not_found")],
+)
+def test_delete_maps_public_outcomes(delete_client, error, status_code, code):
+    client, use_case = delete_client
+    use_case.error = error
+
+    response = client.delete(f"/tweets/{TWEET_ID}")
+
+    assert response.status_code == status_code
+    assert response.json() == {"error": {"code": code}}

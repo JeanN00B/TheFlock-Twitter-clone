@@ -1,6 +1,7 @@
 """Live PostgreSQL HTTP evidence for authenticated tweet creation."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -230,3 +231,75 @@ def test_feed_preserves_unauthenticated_envelope(client: TestClient) -> None:
     response = client.get("/tweets")
     assert response.status_code == 401
     assert response.json() == {"error": {"code": "unauthenticated"}}
+
+
+def test_delete_lifecycle_owner_non_owner_repeat_retained_row_and_feed(client: TestClient, runtime) -> None:
+    owner_id = _register_and_login(client, "delete_owner")
+    created = client.post("/tweets", json={"text": "delete me"})
+    tweet_id = created.json()["id"]
+    with Session(runtime) as session:
+        before = session.execute(select(TweetModel).where(TweetModel.public_id == UUID(tweet_id))).scalar_one()
+        original_updated_at = before.updated_at
+
+    client.cookies.clear()
+    _register_and_login(client, "delete_intruder")
+    denied = client.delete(f"/tweets/{tweet_id}")
+    assert denied.status_code == 403
+    assert denied.json() == {"error": {"code": "forbidden"}}
+    assert tweet_id in {item["id"] for item in client.get("/tweets").json()["items"]}
+    with Session(runtime) as session:
+        denied_row = session.execute(select(TweetModel).where(TweetModel.public_id == UUID(tweet_id))).scalar_one()
+        assert denied_row.deleted_at is None
+        assert denied_row.updated_at == original_updated_at
+
+    client.cookies.clear()
+    login = client.post("/auth/login", json={"email": "delete_owner@example.com", "password": PASSWORD})
+    assert login.status_code == 204
+    deleted = client.delete(f"/tweets/{tweet_id}")
+    repeated = client.delete(f"/tweets/{tweet_id}")
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert repeated.status_code == 404
+    assert repeated.json() == {"error": {"code": "not_found"}}
+    assert tweet_id not in {item["id"] for item in client.get("/tweets?page_size=1").json()["items"]}
+    with Session(runtime) as session:
+        row = session.execute(select(TweetModel).where(TweetModel.public_id == UUID(tweet_id))).scalar_one()
+        assert row.author_public_id == owner_id
+        assert row.deleted_at is not None
+        assert row.deleted_at.tzinfo is not None
+        assert row.updated_at == row.deleted_at
+        assert row.updated_at > original_updated_at
+
+
+def test_delete_validation_auth_unknown_and_concurrent_owner_attempts(client: TestClient, runtime) -> None:
+    unauthenticated = client.delete("/tweets/not-a-uuid")
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json() == {"error": {"code": "unauthenticated"}}
+
+    _register_and_login(client, "concur_owner")
+    for invalid in ("not-a-uuid", "22222222-2222-1222-8222-222222222222", "abcdefab-cdef-4abc-8def-abcdefabcdef".upper()):
+        response = client.delete(f"/tweets/{invalid}")
+        assert response.status_code == 422
+        assert response.json() == {"error": {"code": "validation_error", "fields": {"tweet_id": "invalid"}}}
+    unknown = client.delete("/tweets/33333333-3333-4333-8333-333333333333")
+    assert unknown.status_code == 404
+    assert unknown.json() == {"error": {"code": "not_found"}}
+
+    tweet_id = client.post("/tweets", json={"text": "one transition"}).json()["id"]
+    cookie = client.cookies.get("flock_session")
+
+    def attempt_delete() -> tuple[int, bytes]:
+        with TestClient(app, raise_server_exceptions=False) as concurrent_client:
+            concurrent_client.cookies.set("flock_session", cookie)
+            response = concurrent_client.delete(f"/tweets/{tweet_id}")
+            return response.status_code, response.content
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: attempt_delete(), range(2)))
+    assert sorted(status_code for status_code, _ in results) == [204, 404]
+    assert next(body for status_code, body in results if status_code == 204) == b""
+    assert client.delete(f"/tweets/{tweet_id}").status_code == 404
+    with Session(runtime) as session:
+        row = session.execute(select(TweetModel).where(TweetModel.public_id == UUID(tweet_id))).scalar_one()
+        assert row.deleted_at is not None
+        assert row.updated_at == row.deleted_at

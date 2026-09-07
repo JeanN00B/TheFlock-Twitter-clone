@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictStr, field_serializer
 
 from app.tweets.application.create_tweet import CreateTweet, CreateTweetCommand
-from app.tweets.application.errors import InvalidFeedCursor, TweetValidationError
+from app.tweets.application.delete_tweet import DeleteTweet, DeleteTweetCommand
+from app.tweets.application.errors import InvalidFeedCursor, TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQuery
 from app.tweets.domain.tweet import PublicTweet
 from app.tweets.infrastructure.cursor import decode_cursor, encode_cursor
@@ -60,6 +61,7 @@ def _to_response(tweet: PublicTweet) -> TweetResponse:
 def build_tweet_router(
     create_provider: Callable[..., CreateTweet],
     list_provider: Callable[..., ListTweetFeed],
+    delete_provider: Callable[..., DeleteTweet],
     current_user_dependency: Callable[..., PublicUser],
 ) -> APIRouter:
     router = APIRouter(prefix="/tweets")
@@ -107,5 +109,25 @@ def build_tweet_router(
             items=[_to_response(item) for item in page.items],
             next_cursor=encode_cursor(page.next_cursor) if page.next_cursor else None,
         )
+
+    @router.delete("/{tweet_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_tweet(
+        tweet_id: str,
+        actor: PublicUser = Depends(current_user_dependency),
+        use_case: DeleteTweet = Depends(delete_provider),
+    ) -> Response:
+        try:
+            parsed_id = UUID(tweet_id)
+        except (ValueError, AttributeError):
+            return _validation_response({"tweet_id": "invalid"})
+        if parsed_id.version != 4 or str(parsed_id) != tweet_id:
+            return _validation_response({"tweet_id": "invalid"})
+        try:
+            use_case.execute(DeleteTweetCommand(tweet_id=parsed_id, requester_id=actor.id))
+        except TweetForbidden:
+            return JSONResponse(status_code=403, content={"error": {"code": "forbidden"}})
+        except TweetNotFound:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found"}})
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return router
