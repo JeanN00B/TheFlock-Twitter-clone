@@ -8,17 +8,22 @@ from app.auth.application.session_access import SessionAccess
 from app.auth.infrastructure.login_router import build_login_router
 from app.auth.infrastructure.session_router import build_session_router
 from app.auth.infrastructure.session_store import SQLAlchemySessionStore
+from app.auth.infrastructure.session_dependency import build_current_user_dependency
 from app.auth.infrastructure.session_tokens import (
     SecretsSessionTokenGenerator,
     Sha256SessionTokenHasher,
 )
 from app.infrastructure.database import get_db
+from app.tweets.application.create_tweet import CreateTweet
+from app.tweets.infrastructure.tweet_repository import SQLAlchemyTweetRepository
+from app.tweets.infrastructure.tweet_router import build_tweet_router
 from app.core.settings import get_settings
 from app.users.application.credential_lookup import UserCredentialLookup
 from app.users.infrastructure.credential_lookup import SQLAlchemyUserCredentialLookup
 from app.users.infrastructure.public_user_lookup import SQLAlchemyPublicUserLookup
 from app.users.infrastructure.registration_support import (
     SystemClock,
+    Uuid4Generator,
     get_password_hasher,
 )
 
@@ -66,5 +71,17 @@ def get_session_access(session: Session = Depends(get_db)) -> SessionAccess:
     return build_session_access(session)
 
 
+def get_create_tweet(session: Session = Depends(get_db)) -> CreateTweet:
+    """Provide one transaction-owning create-tweet use case per request."""
+
+    return CreateTweet(
+        repository=SQLAlchemyTweetRepository(session),
+        public_id_generator=Uuid4Generator(),
+        clock=SystemClock(),
+    )
+
+
+current_user_dependency = build_current_user_dependency(get_session_access)
 login_router = build_login_router(get_login, get_session_cookie_secure)
 session_router = build_session_router(get_session_access, get_session_cookie_secure)
+tweet_router = build_tweet_router(get_create_tweet, current_user_dependency)
