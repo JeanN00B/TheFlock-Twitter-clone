@@ -10,7 +10,7 @@ export interface User {
 export type SessionView = { user: User } | null;
 
 export interface LoginInput {
-  username: string;
+  email: string;
   password: string;
 }
 
@@ -89,8 +89,13 @@ export class ApiError extends Error {
 export interface BackendGateway {
   /** POST /auth/register — creates an account without establishing a session. */
   register(input: RegisterInput): Promise<RegistrationResult>;
-  /** POST /auth/login — resolves with the user on success, rejects ApiError(401) otherwise. */
-  login(input: LoginInput): Promise<User>;
+  /**
+   * POST /auth/login — resolves empty on 204 success (the session lives in
+   * the httpOnly cookie; there is no user body). Rejects ApiError(401)
+   * invalid_credentials, ApiError(422) validation_error with fields, or
+   * ApiError(403) origin_not_allowed.
+   */
+  login(input: LoginInput): Promise<void>;
   /** POST /auth/logout — ends the cookie session. */
   logout(): Promise<void>;
   /**

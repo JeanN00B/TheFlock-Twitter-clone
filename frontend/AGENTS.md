@@ -18,7 +18,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Tests: mock HTTP with MSW; no live backend in tests.
 - Styling: Tailwind v4 mobile-first (`sm:md:lg:` scale up from mobile);
   shadcn installed over `@base-ui/react` primitives — keep components shadcn-compatible.
-  (username, not email).
+  (email for login).
 - Auth (Option A, PROVISIONAL): `POST /auth/login` returns User +
   `Set-Cookie: session`; `credentials: include`, never Authorization;
   memory + PUBLIC-only sessionStorage mirror; any 401 clears and

@@ -49,7 +49,7 @@ async function renderProfile(username: string): Promise<RenderResult> {
 
 async function loginAsAlice() {
   await createBackendGateway(BASE_URL).login({
-    username: "alice",
+    email: "alice@example.com",
     password: "password123",
   });
 }

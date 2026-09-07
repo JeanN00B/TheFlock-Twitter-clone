@@ -216,10 +216,19 @@ export function createBackendGateway(
       });
       return mapRegistration(raw);
     },
-    login(input: LoginInput): Promise<User> {
-      return request<User>("/auth/login", {
+    /**
+     * POST /auth/login over the cookie session. The backend answers 204
+     * empty, so success resolves without parsing a body. 401 stays central
+     * (session end); 403 origin_not_allowed passes through untouched — it is
+     * an origin denial, not a session end.
+     */
+    async login(input: LoginInput): Promise<void> {
+      await request<unknown>("/auth/login", {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          email: input.email,
+          password: input.password,
+        }),
       });
     },
     async logout(): Promise<void> {

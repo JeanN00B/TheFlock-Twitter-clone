@@ -3,16 +3,18 @@ import type { Tweet, User } from "@/lib/api/port";
 
 /**
  * PROVISIONAL cookie-session stand-in (mock-first, MSW only).
- * The real backend sets `Set-Cookie: session` (name PROVISIONAL) on
- * POST /auth/login; MSW emulates it with an in-memory stand-in plus a
- * `Set-Cookie` header on the mocked response. Swap stays mechanical:
- * point NEXT_PUBLIC_API_URL at the real backend and delete this file's
- * usages. There is intentionally NO `GET /auth/me` handler — a 401 on any
+ * The real backend answers POST /auth/login with 204 empty and sets
+ * `Set-Cookie: flock_session` (host-only, HttpOnly, SameSite=Lax);
+ * MSW emulates the cookie with an in-memory stand-in plus a `Set-Cookie`
+ * header on the mocked response. Swap stays mechanical: point
+ * NEXT_PUBLIC_API_URL at the real backend and delete this file's usages.
+ * There is intentionally NO `GET /auth/me` handler — a 401 on any
  * request IS the guard (session clears and the app routes to /login).
  */
-const SESSION_COOKIE = "session";
+const SESSION_COOKIE = "flock_session";
 
 interface Account extends User {
+  email: string;
   password: string;
 }
 
@@ -22,6 +24,7 @@ const accounts = new Map<string, Account>([
     {
       id: "u-alice",
       username: "alice",
+      email: "alice@example.com",
       bio: "Test user",
       avatarUrl: null,
       password: "password123",
@@ -113,14 +116,28 @@ function isValidRegistrationField(key: string, value: unknown): boolean {
 
 let sessionStandIn: string | null = null;
 
+/**
+ * Test-only origin gate for POST /auth/login. The real backend denies
+ * disallowed origins with 403 {error:{code:origin_not_allowed}} before
+ * reading the body and without CORS headers; flipping this closed emulates
+ * that denial. Defaults open; reset with the auth stand-in below.
+ */
+let loginOriginAllowed = true;
+
+/** Test-only toggle for the login origin gate (never ship to prod code). */
+export function __setLoginOriginAllowed(allowed: boolean): void {
+  loginOriginAllowed = allowed;
+}
+
 /** Test-only accessor for the PROVISIONAL stand-in (never ship to prod code). */
 export function __getAuthStandIn(): string | null {
   return sessionStandIn;
 }
 
-/** Test-only reset for the PROVISIONAL stand-in. */
+/** Test-only reset for the PROVISIONAL stand-in (also reopens the origin gate). */
 export function __resetAuthStandIn(): void {
   sessionStandIn = null;
+  loginOriginAllowed = true;
 }
 
 /** Test-only reset for stateful registration records. */
@@ -271,22 +288,64 @@ export const handlers = [
   }),
 
   http.post("*/auth/login", async ({ request }) => {
-    const body = (await request.json()) as {
-      username?: string;
-      password?: string;
-    };
-    const account = accounts.get((body.username ?? "").trim().toLowerCase());
-    if (account === undefined || account.password !== body.password) {
+    // Origin gate runs before the body is read, exactly like the backend
+    // middleware: denial carries no CORS headers.
+    if (!loginOriginAllowed) {
       return HttpResponse.json(
-        { detail: "Invalid credentials" },
+        { error: { code: "origin_not_allowed" } },
+        { status: 403 },
+      );
+    }
+    const body: unknown = await request.json();
+    // Backend schema is exactly {email,password} (strict strings,
+    // extra=forbid): anything else is 422 with per-field markers.
+    const fields: Record<string, string> = {};
+    if (body === null || typeof body !== "object") {
+      fields.email = "invalid";
+      fields.password = "invalid";
+    } else {
+      const record = body as Record<string, unknown>;
+      for (const key of ["email", "password"]) {
+        if (typeof record[key] !== "string") fields[key] = "invalid";
+      }
+      for (const key of Object.keys(record)) {
+        if (key !== "email" && key !== "password") fields[key] = "invalid";
+      }
+    }
+    if (Object.keys(fields).length > 0) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields } },
+        { status: 422 },
+      );
+    }
+    // Backend use case canonicalizes the email (trim, lowercase, syntax):
+    // a malformed address is 422, never 401.
+    const record = body as Record<string, unknown>;
+    const canonicalEmail = (record.email as string).trim().toLowerCase();
+    if (
+      canonicalEmail.length === 0 ||
+      canonicalEmail.length > 254 ||
+      !REGISTRATION_EMAIL_PATTERN.test(canonicalEmail)
+    ) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { email: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const account = [...accounts.values()].find(
+      (candidate) => candidate.email === canonicalEmail,
+    );
+    if (account === undefined || account.password !== record.password) {
+      return HttpResponse.json(
+        { error: { code: "invalid_credentials" } },
         { status: 401 },
       );
     }
     sessionStandIn = `${SESSION_COOKIE}=${account.username}-session`;
-    return HttpResponse.json(publicUser(account), {
-      status: 200,
+    return new HttpResponse(null, {
+      status: 204,
       headers: {
-        "Set-Cookie": `${sessionStandIn}; Path=/; HttpOnly; SameSite=Lax`,
+        "Set-Cookie": `${sessionStandIn}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
       },
     });
   }),
