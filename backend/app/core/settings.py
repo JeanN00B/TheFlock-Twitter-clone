@@ -1,8 +1,9 @@
 """Application settings loaded from the process environment."""
 
+import os
 from functools import lru_cache
-from ipaddress import IPv4Address, IPv6Address
 from typing import Literal
+from ipaddress import IPv4Address, IPv6Address
 from urllib.parse import urlsplit
 
 from pydantic import field_validator, model_validator
@@ -10,26 +11,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _DEFAULT_HTTP_PORTS = {"http": 80, "https": 443}
+_DEFAULT_FRONTEND_ORIGIN = "http://localhost:3000"
 
 
 def normalize_origin(origin: str) -> str:
     """Return the canonical form of one concrete HTTP(S) origin."""
 
     if not isinstance(origin, str) or not origin or origin != origin.strip():
-        raise ValueError("allowed origins must be concrete HTTP(S) origins")
+        raise ValueError("browser origin must be a concrete HTTP(S) origin")
     if any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in origin):
-        raise ValueError("allowed origins must not contain whitespace or control characters")
+        raise ValueError("browser origin must not contain whitespace or control characters")
     if "*" in origin or "?" in origin or "#" in origin or "\\" in origin:
-        raise ValueError("allowed origins must not contain wildcards or URL components")
+        raise ValueError("browser origin must not contain wildcards or URL components")
 
     parsed = urlsplit(origin)
     scheme = parsed.scheme.lower()
     if scheme not in _DEFAULT_HTTP_PORTS or not parsed.netloc or parsed.netloc.endswith(":"):
-        raise ValueError("allowed origins must use HTTP or HTTPS")
+        raise ValueError("browser origin must use HTTP or HTTPS")
     if parsed.path or parsed.query or parsed.fragment:
-        raise ValueError("allowed origins must not contain a path, query, or fragment")
+        raise ValueError("browser origin must not contain a path, query, or fragment")
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("allowed origins must not contain credentials")
+        raise ValueError("browser origin must not contain credentials")
 
     try:
         hostname = parsed.hostname
@@ -81,47 +83,49 @@ def _normalize_hostname(hostname: str) -> str:
     return ".".join(normalized_labels) + ("." if hostname.endswith(".") else "")
 
 
+def get_frontend_origin() -> str:
+    """Return the normalized browser origin configured by Next.js."""
+
+    return normalize_origin(os.getenv("NEXT_PUBLIC_APP_URL", _DEFAULT_FRONTEND_ORIGIN))
+
+
 class Settings(BaseSettings):
     """Runtime configuration for the backend application."""
 
+    app_environment: Literal["development", "production"] = "development"
+    next_public_app_url: str = _DEFAULT_FRONTEND_ORIGIN
     database_url: str
     auto_migrate: bool = False
-    app_environment: Literal["local", "production"] = "local"
-    allowed_origins: tuple[str, ...] = ()
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         env_prefix="",
         extra="ignore",
+        validate_default=True,
     )
 
-    @field_validator("app_environment")
+    @field_validator("next_public_app_url")
     @classmethod
-    def validate_app_environment(
-        cls, value: Literal["local", "production"]
-    ) -> Literal["local", "production"]:
-        if value not in {"local", "production"}:
-            raise ValueError("app_environment must be local or production")
-        return value
+    def normalize_next_public_app_url(cls, value: str) -> str:
+        """Keep the configured browser origin in canonical exact-origin form."""
 
-    @field_validator("allowed_origins")
-    @classmethod
-    def validate_allowed_origins(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(normalize_origin(origin) for origin in values)
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("allowed_origins must not contain duplicates")
-        return normalized
+        return normalize_origin(value)
 
     @model_validator(mode="after")
-    def require_production_origins(self) -> "Settings":
-        if self.app_environment == "production" and not self.allowed_origins:
-            raise ValueError("production requires a non-empty allowed_origins")
+    def require_https_browser_origin_in_production(self) -> "Settings":
+        """Reject production cookies configured for an insecure browser origin."""
+
+        if (
+            self.app_environment == "production"
+            and urlsplit(self.next_public_app_url).scheme != "https"
+        ):
+            raise ValueError("production requires NEXT_PUBLIC_APP_URL to use HTTPS")
         return self
 
     @property
     def session_cookie_secure(self) -> bool:
-        """Whether the session cookie must use the Secure attribute."""
+        """Return the fixed cookie Secure policy for the selected environment."""
 
         return self.app_environment == "production"
 

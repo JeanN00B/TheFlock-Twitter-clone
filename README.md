@@ -29,7 +29,7 @@ Run the full stack with Docker — no local Postgres or Node needed.
    ```bash
    cp .env.example .env
    ```
-   This copies `POSTGRES_USER`, `POSTGRES_PASSWORD=<REDACTED>`, `POSTGRES_DB`, `DATABASE_URL` (with `<REDACTED>` password), `TWITTER_DB_PORT`, `TWITTER_BACKEND_PORT`, `TWITTER_FRONTEND_PORT`, `BACKEND_API_URL`, `BACKEND_SECRET_KEY=<REDACTED>`, `NEXT_PUBLIC_API_URL`, `NODE_ENV`.
+   This copies `POSTGRES_USER`, `POSTGRES_PASSWORD=<REDACTED>`, `POSTGRES_DB`, `DATABASE_URL` (with `<REDACTED>` password), `TWITTER_DB_PORT`, `TWITTER_BACKEND_PORT`, `TWITTER_FRONTEND_PORT`, `BACKEND_API_URL`, `BACKEND_SECRET_KEY=<REDACTED>`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_APP_URL`, `APP_ENVIRONMENT`, `NODE_ENV`, `TEST_DATABASE_URL`, and `AUTO_MIGRATE`
 3. Run:
    ```bash
    # Production version
@@ -45,3 +45,17 @@ Run the full stack with Docker — no local Postgres or Node needed.
 
 
 4. Open frontend `http://localhost:3000` and backend health `http://localhost:8000/health`.
+
+
+## Disposable PostgreSQL test runbook
+
+Start only the isolated test database from the development Compose file:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile test up
+cd backend
+
+uv run pytest
+```
+
+

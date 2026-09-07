@@ -41,9 +41,6 @@ from app.infrastructure.database import Base  # noqa: E402
 from app.users.infrastructure.user_model import UserModel  # noqa: E402
 
 
-os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-
-
 def _alembic_config() -> AlembicConfig:
     config = AlembicConfig("alembic.ini")
     config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
@@ -52,7 +49,12 @@ def _alembic_config() -> AlembicConfig:
 
 @pytest.fixture(scope="module", autouse=True)
 def migrated_database():
-    alembic_command.upgrade(_alembic_config(), "head")
+    patch = pytest.MonkeyPatch()
+    patch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    try:
+        alembic_command.upgrade(_alembic_config(), "head")
+    finally:
+        patch.undo()
     yield
     engine = create_engine(TEST_DATABASE_URL)
     try:

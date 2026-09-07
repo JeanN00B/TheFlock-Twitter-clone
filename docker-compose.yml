@@ -35,6 +35,9 @@ services:
       target: runner
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://flock:flockpw@twitter-db:5432/flockdb}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      # Sole configured browser origin for credentialed frontend requests.
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
       POSTGRES_HOST: twitter-db
       POSTGRES_PORT: 5432
