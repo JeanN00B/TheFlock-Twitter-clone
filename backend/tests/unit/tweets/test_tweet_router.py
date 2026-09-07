@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.tweets.application.create_tweet import CreateTweetCommand
 from app.tweets.application.errors import TweetValidationError
+from app.tweets.application.list_tweet_feed import ListTweetFeedQuery, TweetPage
+from app.tweets.application.ports import FeedCursor
 from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet
 from app.users.domain.user import PublicUser
 
@@ -131,3 +133,69 @@ def test_create_maps_domain_text_validation_without_success(create_client, text)
 
     assert response.status_code == 422
     assert response.json() == {"error": {"code": "validation_error", "fields": {"text": "invalid"}}}
+
+
+class RecordingListTweetFeed:
+    def __init__(self) -> None:
+        self.queries: list[ListTweetFeedQuery] = []
+
+    def execute(self, query: ListTweetFeedQuery) -> TweetPage:
+        self.queries.append(query)
+        item = PublicTweet(TWEET_ID, "hello", NOW, PublicAuthorSummary(ACTOR_ID, "alice", "Alice Example"))
+        return TweetPage((item,), FeedCursor(NOW, TWEET_ID))
+
+
+@pytest.fixture()
+def feed_client():
+    from app.composition import current_user_dependency, get_list_tweet_feed
+    from app.main import app
+
+    use_case = RecordingListTweetFeed()
+    actor = PublicUser(ACTOR_ID, "private@example.com", "alice", "Alice Example", NOW, NOW)
+    app.dependency_overrides[get_list_tweet_feed] = lambda: use_case
+    app.dependency_overrides[current_user_dependency] = lambda: actor
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client, use_case
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_feed_defaults_page_size_and_returns_exact_envelope(feed_client):
+    client, use_case = feed_client
+    response = client.get("/tweets")
+    assert response.status_code == 200
+    assert set(response.json()) == {"items", "next_cursor"}
+    assert response.json()["items"] == [{
+        "id": str(TWEET_ID), "text": "hello", "created_at": "2026-09-07T12:34:56.123456Z",
+        "author": {"id": str(ACTOR_ID), "username": "alice", "display_name": "Alice Example"},
+    }]
+    assert response.json()["next_cursor"]
+    assert use_case.queries == [ListTweetFeedQuery(page_size=20)]
+
+
+@pytest.mark.parametrize("query", ["page_size=0", "page_size=51", "page_size=", "page_size=1.0", "page_size=true", "page_size=01", "page_size=2&page_size=3"])
+def test_feed_rejects_noncanonical_page_size_without_query(feed_client, query):
+    client, use_case = feed_client
+    response = client.get(f"/tweets?{query}")
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": "validation_error", "fields": {"page_size": "invalid"}}}
+    assert use_case.queries == []
+
+
+def test_feed_decodes_cursor_and_allows_new_page_size(feed_client):
+    from app.tweets.infrastructure.cursor import encode_cursor
+    client, use_case = feed_client
+    cursor = encode_cursor(FeedCursor(NOW, TWEET_ID))
+    response = client.get(f"/tweets?page_size=50&cursor={cursor}")
+    assert response.status_code == 200
+    assert use_case.queries == [ListTweetFeedQuery(page_size=50, before=FeedCursor(NOW, TWEET_ID))]
+
+
+@pytest.mark.parametrize("query", ["cursor=", "cursor=bad%", "cursor=a&cursor=b"])
+def test_feed_rejects_invalid_cursor_without_query(feed_client, query):
+    client, use_case = feed_client
+    response = client.get(f"/tweets?{query}")
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": "validation_error", "fields": {"cursor": "invalid"}}}
+    assert use_case.queries == []
