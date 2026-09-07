@@ -26,7 +26,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Tweets (S2): `/` owns the timeline and composer; the client blocks text
   over 280 characters, while the server remains authoritative with 422.
 - Social (S3): `/profile/[username]` owns follow/unfollow and updates the
-  profile count; do not add search or follow affordances elsewhere.
+  profile count; search stays exact-username-only in the shell (self →
+  `/my-profile`, known → `/profile/[username]`, unknown → friendly
+  error); do not add follow affordances elsewhere.
 - Arch: single `BackendGateway` port (`lib/api`), one fetch adapter,
   `lib/composition.ts` factory-called-once, no fetch outside adapter;
   `features/*` smart slices own UI+hooks, `components/*` dumb only.

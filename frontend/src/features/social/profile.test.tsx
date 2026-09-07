@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import { act, Suspense } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ProfilePage from "@/app/profile/[username]/page";
+import ProfilePage from "@/app/(shell)/profile/[username]/page";
 import { AppProviders } from "@/app/providers";
 import { SESSION_STORAGE_KEY } from "@/features/auth/session-store";
 import { createBackendGateway } from "@/lib/api/fetch-client";

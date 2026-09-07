@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import Home from "@/app/page";
+import Home from "@/app/(shell)/page";
 import { AppProviders } from "@/app/providers";
 import { SESSION_STORAGE_KEY } from "@/features/auth/session-store";
 import { createBackendGateway } from "@/lib/api/fetch-client";
