@@ -103,7 +103,11 @@ from sqlalchemy import create_engine, delete, func, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.users.application.register_user import UserWriteConflict  # noqa: E402
-from app.users.domain.user import NewUser  # noqa: E402
+from app.users.domain.user import NewUser, PublicUser  # noqa: E402
+from app.auth.infrastructure.session_model import SessionModel  # noqa: E402
+from app.users.infrastructure.public_user_lookup import (  # noqa: E402
+    SQLAlchemyPublicUserLookup,
+)
 from app.users.infrastructure.user_model import UserModel  # noqa: E402
 from app.users.infrastructure.user_repository import SQLAlchemyUserRepository  # noqa: E402
 
@@ -129,12 +133,14 @@ def _new_user(**overrides) -> NewUser:
 def db_session():
     engine = create_engine(TEST_DATABASE_URL)
     session = Session(engine)
+    session.execute(delete(SessionModel))
     session.execute(delete(UserModel))
     session.commit()
     try:
         yield session
     finally:
         session.rollback()
+        session.execute(delete(SessionModel))
         session.execute(delete(UserModel))
         session.commit()
         session.close()
@@ -213,6 +219,26 @@ def test_repository_does_not_close_session(db_session: Session) -> None:
     assert db_session.execute(select(func.count()).select_from(UserModel)).scalar_one() == 2
 
 
+def test_public_user_lookup_returns_credential_free_projection_or_none(
+    db_session: Session,
+) -> None:
+    user = _new_user()
+    SQLAlchemyUserRepository(db_session).add(user)
+
+    lookup = SQLAlchemyPublicUserLookup(db_session)
+    public_user = lookup.find_by_public_id(user.public_id)
+
+    assert isinstance(public_user, PublicUser)
+    assert public_user.id == user.public_id
+    assert public_user.email == user.email
+    assert public_user.username == user.username
+    assert public_user.display_name == user.display_name
+    assert public_user.created_at == FIXED_INSTANT
+    assert public_user.updated_at == FIXED_INSTANT
+    assert not hasattr(public_user, "password_hash")
+    assert lookup.find_by_public_id(uuid4()) is None
+
+
 # --- Race, rollback, migration lifecycle (WU3-RED-3) ---
 
 import threading  # noqa: E402
@@ -231,6 +257,7 @@ def _alembic_config() -> AlembicConfig:
 def test_concurrent_duplicate_registration_is_race_safe() -> None:
     cleanup_engine = create_engine(TEST_DATABASE_URL)
     with Session(cleanup_engine) as cleanup:
+        cleanup.execute(delete(SessionModel))
         cleanup.execute(delete(UserModel))
         cleanup.commit()
     cleanup_engine.dispose()
@@ -270,6 +297,7 @@ def test_concurrent_duplicate_registration_is_race_safe() -> None:
     try:
         with Session(verify_engine) as verify:
             assert verify.execute(select(func.count()).select_from(UserModel)).scalar_one() == 1
+            verify.execute(delete(SessionModel))
             verify.execute(delete(UserModel))
             verify.commit()
     finally:
@@ -308,11 +336,22 @@ def test_migration_lifecycle_drops_and_recreates_only_users(monkeypatch: pytest.
     get_engine.cache_clear()
     get_session_factory.cache_clear()
     config = _alembic_config()
-    alembic_command.downgrade(config, "base")
+    cleanup_engine = create_engine(TEST_DATABASE_URL)
+    try:
+        with Session(cleanup_engine) as cleanup:
+            cleanup.execute(delete(SessionModel))
+            cleanup.execute(delete(UserModel))
+            cleanup.commit()
+    finally:
+        cleanup_engine.dispose()
+
+    alembic_command.downgrade(config, "b1c2d3e4f5a6")
     try:
         engine = create_engine(TEST_DATABASE_URL)
         try:
-            assert "users" not in sa_inspect(engine).get_table_names()
+            table_names = set(sa_inspect(engine).get_table_names())
+            assert "users" in table_names
+            assert "sessions" not in table_names
         finally:
             engine.dispose()
     finally:
@@ -321,13 +360,14 @@ def test_migration_lifecycle_drops_and_recreates_only_users(monkeypatch: pytest.
     engine = create_engine(TEST_DATABASE_URL)
     try:
         inspector = sa_inspect(engine)
-        assert "users" in inspector.get_table_names()
+        assert {"users", "sessions"} <= set(inspector.get_table_names())
         assert {constraint["name"] for constraint in inspector.get_unique_constraints("users")} == {
             "uq_users_public_id",
             "uq_users_email",
             "uq_users_username",
         }
         with Session(engine) as session:
+            session.execute(delete(SessionModel))
             session.execute(delete(UserModel))
             session.commit()
     finally:

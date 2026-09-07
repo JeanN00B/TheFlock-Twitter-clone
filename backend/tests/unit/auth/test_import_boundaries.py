@@ -68,7 +68,10 @@ def test_composition_is_the_explicit_cross_capability_wiring_root() -> None:
 
     assert "app.users.infrastructure.credential_lookup" in imported
     assert "app.users.infrastructure.registration_support" in imported
+    assert "app.users.infrastructure.public_user_lookup" in imported
+    assert "app.auth.application.session_access" in imported
     assert "app.auth.infrastructure.login_router" in imported
+    assert "app.auth.infrastructure.session_router" in imported
     assert "app.auth.infrastructure.session_store" in imported
     assert "app.auth.infrastructure.session_tokens" in imported
     assert "app.infrastructure.database" in imported
@@ -79,10 +82,13 @@ def test_main_composes_login_and_keeps_origin_middleware_at_the_edge() -> None:
     imported = _imports(MAIN_PATH)
     source = MAIN_PATH.read_text()
 
+    assert "app.auth.application.session_access" in imported
     assert "app.composition" in imported
     assert "app.auth.infrastructure.origin_middleware" in imported
     assert "app.users.infrastructure.registration_router" in imported
     assert "app.include_router(login_router)" in source
+    assert "app.include_router(session_router)" in source
+    assert "Unauthenticated" in source
     assert "LoginOriginMiddleware" in source
     assert "CORSMiddleware" in source
 

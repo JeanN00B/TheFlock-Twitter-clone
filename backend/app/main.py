@@ -6,8 +6,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.auth.application.session_access import Unauthenticated
 from app.auth.infrastructure.origin_middleware import LoginOriginMiddleware
-from app.composition import login_router
+from app.composition import login_router, session_router
 from app.core.settings import get_frontend_origin
 from app.users.infrastructure.registration_router import router as registration_router
 
@@ -30,6 +31,7 @@ app.add_middleware(
 )
 app.include_router(registration_router)
 app.include_router(login_router)
+app.include_router(session_router)
 
 
 def _registration_validation_fields(error: RequestValidationError) -> dict[str, str]:
@@ -45,6 +47,16 @@ def _registration_validation_fields(error: RequestValidationError) -> dict[str, 
         )
         fields[field] = "invalid"
     return fields
+
+
+@app.exception_handler(Unauthenticated)
+async def unauthenticated_exception_handler(
+    request: Request, error: Unauthenticated
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"error": {"code": "unauthenticated"}},
+    )
 
 
 @app.exception_handler(RequestValidationError)

@@ -272,6 +272,41 @@ def test_two_sessions_share_user_without_replacement(
     assert db_session.execute(select(func.count()).select_from(SessionModel)).scalar_one() == 2
 
 
+def test_session_store_finds_only_active_sessions_for_a_digest(
+    db_session: SQLAlchemySession,
+) -> None:
+    user_public_id = _seed_user(db_session)
+    digest = SessionTokenDigest(b"a" * 32)
+    SQLAlchemySessionStore(db_session).add_committed(
+        _domain_session(user_public_id=user_public_id, digest=digest.value)
+    )
+    store = SQLAlchemySessionStore(db_session)
+
+    assert (
+        store.find_active_user(digest, FIXED_ISSUED_AT + timedelta(days=1))
+        == user_public_id
+    )
+    assert store.find_active_user(digest, FIXED_EXPIRES_AT) is None
+    assert store.find_active_user(SessionTokenDigest(b"x" * 32), FIXED_ISSUED_AT) is None
+
+
+def test_session_store_revoke_is_idempotent_and_committed(
+    db_session: SQLAlchemySession,
+) -> None:
+    user_public_id = _seed_user(db_session)
+    digest = SessionTokenDigest(b"r" * 32)
+    store = SQLAlchemySessionStore(db_session)
+    store.add_committed(_domain_session(user_public_id=user_public_id, digest=digest.value))
+
+    store.revoke(digest)
+    store.revoke(digest)
+
+    assert not db_session.in_transaction()
+    assert db_session.execute(
+        select(func.count()).select_from(SessionModel)
+    ).scalar_one() == 0
+
+
 def test_invalid_domain_digest_and_expiry_are_rejected() -> None:
     with pytest.raises(ValueError, match="exactly 32 bytes"):
         SessionTokenDigest(b"x" * 31)

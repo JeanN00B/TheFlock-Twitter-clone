@@ -6,7 +6,11 @@ import pytest
 from starlette.responses import Response
 
 from app.auth.application.login import CommittedSessionCookie, RawSessionToken
-from app.auth.infrastructure.session_cookie import write_session_cookie
+from app.auth.infrastructure.session_cookie import (
+    clear_session_cookie,
+    read_session_cookie,
+    write_session_cookie,
+)
 
 
 RAW_TOKEN = bytes(range(32))
@@ -98,3 +102,89 @@ def test_cookie_writer_consumes_handoff_once_and_returns_no_raw_token() -> None:
         write_session_cookie(response, handoff, secure=True)
     assert RAW_TOKEN.hex() not in str(raised.value)
     assert header == response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "A" * 42,
+        "A" * 44,
+        "A" * 42 + "=",
+        "A" * 42 + "!",
+        "A" * 42 + "+",
+        "A" * 42 + "/",
+        "é" * 43,
+        "A" * 42 + "\n",
+        "A" * 42 + "B",
+    ],
+    ids=[
+        "missing",
+        "empty",
+        "short",
+        "long",
+        "padded",
+        "bang",
+        "plus",
+        "slash",
+        "non-ascii",
+        "newline",
+        "non-canonical-trailing-bits",
+    ],
+)
+def test_cookie_reader_rejects_missing_malformed_and_noncanonical_values(
+    value: str | None,
+) -> None:
+    assert read_session_cookie(value) is None
+
+
+def test_cookie_reader_returns_redacted_fixed_length_token_for_valid_round_trip() -> None:
+    response = Response(status_code=204)
+    handoff = CommittedSessionCookie(RawSessionToken(RAW_TOKEN), EXPIRY)
+    write_session_cookie(response, handoff, secure=False)
+    encoded = response.headers["set-cookie"].split("flock_session=", 1)[1].split(
+        ";", 1
+    )[0]
+
+    token = read_session_cookie(encoded)
+
+    assert token is not None
+    assert token.as_bytes() == RAW_TOKEN
+    assert RAW_TOKEN.hex() not in repr(token)
+
+
+def test_cookie_reader_rejects_non_string_values() -> None:
+    assert read_session_cookie(42) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("secure", [False, True])
+def test_clear_cookie_expires_host_only_path_cookie(secure: bool) -> None:
+    response = RecordingResponse()
+
+    result = clear_session_cookie(response, secure=secure)
+
+    assert result is None
+    assert response.set_cookie_calls == [
+        (
+            ("flock_session",),
+            {
+                "max_age": 0,
+                "expires": 0,
+                "path": "/",
+                "domain": None,
+                "secure": secure,
+                "httponly": True,
+                "samesite": "lax",
+            },
+        )
+    ]
+    header = response.headers["set-cookie"]
+    assert header.startswith('flock_session="";')
+    assert "expires=" in header
+    assert "Max-Age=0" in header
+    assert "Path=/" in header
+    assert "Domain=" not in header
+    assert "HttpOnly" in header
+    assert "SameSite=lax" in header
+    assert ("; Secure" in header) is secure

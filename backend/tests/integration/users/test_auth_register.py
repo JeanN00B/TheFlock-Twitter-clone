@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.settings import get_settings
 from app.infrastructure.database import get_engine, get_session_factory
 from app.main import app, registration_request_validation_handler
+from app.auth.infrastructure.session_model import SessionModel
 from app.users.infrastructure.user_model import UserModel
 
 pytestmark = pytest.mark.integration
@@ -35,12 +36,14 @@ def clean_users(monkeypatch: pytest.MonkeyPatch):
     get_session_factory.cache_clear()
     engine = create_engine(TEST_DATABASE_URL)
     with Session(engine) as session:
+        session.execute(delete(SessionModel))
         session.execute(delete(UserModel))
         session.commit()
     try:
         yield engine
     finally:
         with Session(engine) as session:
+            session.execute(delete(SessionModel))
             session.execute(delete(UserModel))
             session.commit()
         engine.dispose()
@@ -87,6 +90,7 @@ def test_register_endpoint_creates_exact_public_user(clean_users) -> None:
 
     with Session(clean_users) as session:
         assert session.execute(select(func.count()).select_from(UserModel)).scalar_one() == 1
+        assert session.execute(select(func.count()).select_from(SessionModel)).scalar_one() == 0
         row = session.execute(select(UserModel)).scalar_one()
         assert row.email == "person+tag@example.com"
         assert row.username == "alice_42"
@@ -205,6 +209,7 @@ def test_register_maps_malformed_or_non_object_body_to_body_field(content: str, 
 
 def test_health_contract_remains_unchanged() -> None:
     with TestClient(app) as client:
+        client.cookies.set("flock_session", "opaque-placeholder")
         response = client.get("/health")
 
     assert response.status_code == 200
@@ -271,6 +276,7 @@ def test_register_maps_application_validation_without_persistence(
     assert "Set-Cookie" not in response.headers
     with Session(clean_users) as session:
         assert session.execute(select(func.count()).select_from(UserModel)).scalar_one() == 0
+        assert session.execute(select(func.count()).select_from(SessionModel)).scalar_one() == 0
 
 
 class ValidationProbe(BaseModel):

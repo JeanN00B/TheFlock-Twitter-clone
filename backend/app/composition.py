@@ -4,7 +4,9 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from app.auth.application.login import Login
+from app.auth.application.session_access import SessionAccess
 from app.auth.infrastructure.login_router import build_login_router
+from app.auth.infrastructure.session_router import build_session_router
 from app.auth.infrastructure.session_store import SQLAlchemySessionStore
 from app.auth.infrastructure.session_tokens import (
     SecretsSessionTokenGenerator,
@@ -14,6 +16,7 @@ from app.infrastructure.database import get_db
 from app.core.settings import get_settings
 from app.users.application.credential_lookup import UserCredentialLookup
 from app.users.infrastructure.credential_lookup import SQLAlchemyUserCredentialLookup
+from app.users.infrastructure.public_user_lookup import SQLAlchemyPublicUserLookup
 from app.users.infrastructure.registration_support import (
     SystemClock,
     get_password_hasher,
@@ -46,4 +49,22 @@ def get_session_cookie_secure() -> bool:
     return get_settings().session_cookie_secure
 
 
+def build_session_access(session: Session) -> SessionAccess:
+    """Compose current-user resolution and revocation from concrete adapters."""
+
+    return SessionAccess(
+        session_store=SQLAlchemySessionStore(session),
+        public_user_lookup=SQLAlchemyPublicUserLookup(session),
+        token_hasher=Sha256SessionTokenHasher(),
+        clock=SystemClock(),
+    )
+
+
+def get_session_access(session: Session = Depends(get_db)) -> SessionAccess:
+    """Provide one composed SessionAccess use case for each request."""
+
+    return build_session_access(session)
+
+
 login_router = build_login_router(get_login, get_session_cookie_secure)
+session_router = build_session_router(get_session_access, get_session_cookie_secure)
