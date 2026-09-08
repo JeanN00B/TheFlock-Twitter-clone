@@ -3,10 +3,9 @@
 ## Capability modules
 - Organize business capabilities under `app/<capability>/` with explicit
   `domain/`, `application/`, and `infrastructure/` modules.
-- `app/users/` owns registration, including the public `POST /auth/register`
-  route. Do not create an Auth capability for registration-only behavior.
-- A later `app/auth/` capability owns login, session, and authentication
-  behavior when that work is introduced.
+- `app/users/` owns registration (`POST /auth/register`), public profiles,
+  search, and follow relationships.
+- `app/auth/` owns login, cookie sessions, `/auth/me`, and logout.
 
 ## Dependency direction
 - Within each capability, dependencies point inward:

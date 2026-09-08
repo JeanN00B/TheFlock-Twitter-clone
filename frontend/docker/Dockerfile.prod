@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
 # theFlock-twitter frontend prod — Next 16.3.4 / React 19 / pnpm 10.32.1 on Node 24-alpine.
-# Standalone file (no targets). No Playwright/chromium — not needed for this app.
-# Requires `output: 'standalone'` in next.config.ts (NOT enabled yet — dev first).
+# Standalone file (no targets). Expects `output: 'standalone'` in next.config.ts.
 
 FROM node:24-alpine AS deps
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate

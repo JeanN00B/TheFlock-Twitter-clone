@@ -1,6 +1,10 @@
 # Demo seeder
 
-Endpoint-first deterministic seed: 10 users, 50 tweets, runtime-generated follow graph, and 3–6 cross-likes per user.
+Endpoint-first deterministic seed: 10 users, 50 tweets, runtime-generated follow
+graph, and 3–6 cross-likes per user.
+
+After `all`, log in as `user1@example.com` / `user1password` (same pattern for
+`user2`…`user10`).
 
 ## Default invocation (Docker, recommended)
 
