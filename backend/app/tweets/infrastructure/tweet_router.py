@@ -13,6 +13,7 @@ from app.tweets.application.delete_tweet import DeleteTweet, DeleteTweetCommand
 from app.tweets.application.errors import InvalidFeedCursor, TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQuery
 from app.tweets.application.ports import FeedKind, FeedScope
+from app.tweets.application.set_like_state import SetLikeState, SetLikeStateCommand
 from app.tweets.domain.tweet import PublicTweet
 from app.tweets.infrastructure.cursor import decode_cursor, encode_cursor
 from app.users.domain.user import PublicUser, canonicalize_username
@@ -48,6 +49,13 @@ class TweetFeedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LikeStateResponse(BaseModel):
+    tweet_id: UUID
+    like_count: int
+    liked_by_actor: bool
+    model_config = ConfigDict(extra="forbid")
+
+
 def _validation_response(fields: dict[str, str]) -> JSONResponse:
     return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "fields": fields}})
 
@@ -59,11 +67,37 @@ def _to_response(tweet: PublicTweet) -> TweetResponse:
     )
 
 
+def _parse_canonical_tweet_id(raw_id: str) -> UUID | None:
+    try:
+        parsed_id = UUID(raw_id)
+    except (ValueError, AttributeError):
+        return None
+    return parsed_id if parsed_id.version == 4 and str(parsed_id) == raw_id else None
+
+
+def _like_state_response(
+    raw_id: str, actor: PublicUser, use_case: SetLikeState, liked: bool
+) -> LikeStateResponse | JSONResponse:
+    parsed_id = _parse_canonical_tweet_id(raw_id)
+    if parsed_id is None:
+        return _validation_response({"tweet_id": "invalid"})
+    try:
+        state = use_case.execute(SetLikeStateCommand(parsed_id, actor.id, liked))
+    except TweetNotFound:
+        return JSONResponse(status_code=404, content={"error": {"code": "not_found"}})
+    return LikeStateResponse(
+        tweet_id=state.tweet_id,
+        like_count=state.like_count,
+        liked_by_actor=state.liked_by_actor,
+    )
+
+
 def build_tweet_router(
     create_provider: Callable[..., CreateTweet],
     list_provider: Callable[..., ListTweetFeed],
     delete_provider: Callable[..., DeleteTweet],
     current_user_dependency: Callable[..., PublicUser],
+    like_state_provider: Callable[..., SetLikeState],
 ) -> APIRouter:
     router = APIRouter(prefix="/tweets")
 
@@ -134,17 +168,30 @@ def build_tweet_router(
             next_cursor=encode_cursor(page.next_cursor) if page.next_cursor else None,
         )
 
+    @router.post("/{tweet_id}/like", response_model=LikeStateResponse)
+    def like_tweet(
+        tweet_id: str,
+        actor: PublicUser = Depends(current_user_dependency),
+        use_case: SetLikeState = Depends(like_state_provider),
+    ) -> LikeStateResponse | JSONResponse:
+        return _like_state_response(tweet_id, actor, use_case, True)
+
+    @router.delete("/{tweet_id}/like", response_model=LikeStateResponse)
+    def unlike_tweet(
+        tweet_id: str,
+        actor: PublicUser = Depends(current_user_dependency),
+        use_case: SetLikeState = Depends(like_state_provider),
+    ) -> LikeStateResponse | JSONResponse:
+        return _like_state_response(tweet_id, actor, use_case, False)
+
     @router.delete("/{tweet_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_tweet(
         tweet_id: str,
         actor: PublicUser = Depends(current_user_dependency),
         use_case: DeleteTweet = Depends(delete_provider),
     ) -> Response:
-        try:
-            parsed_id = UUID(tweet_id)
-        except (ValueError, AttributeError):
-            return _validation_response({"tweet_id": "invalid"})
-        if parsed_id.version != 4 or str(parsed_id) != tweet_id:
+        parsed_id = _parse_canonical_tweet_id(tweet_id)
+        if parsed_id is None:
             return _validation_response({"tweet_id": "invalid"})
         try:
             use_case.execute(DeleteTweetCommand(tweet_id=parsed_id, requester_id=actor.id))

@@ -6,12 +6,14 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.application.session_access import Unauthenticated
 from app.tweets.application.create_tweet import CreateTweetCommand
 from app.tweets.application.delete_tweet import DeleteTweetCommand
 from app.tweets.application.errors import TweetForbidden, TweetNotFound, TweetValidationError
+from app.tweets.application.set_like_state import SetLikeStateCommand
 from app.tweets.application.list_tweet_feed import ListTweetFeedQuery, TweetPage
 from app.tweets.application.ports import FeedCursor
-from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet
+from app.tweets.domain.tweet import LikeState, PublicAuthorSummary, PublicTweet
 from app.users.domain.user import PublicUser
 
 ACTOR_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -272,3 +274,111 @@ def test_delete_maps_public_outcomes(delete_client, error, status_code, code):
 
     assert response.status_code == status_code
     assert response.json() == {"error": {"code": code}}
+
+
+class RecordingLikeState:
+    def __init__(self) -> None:
+        self.commands: list[SetLikeStateCommand] = []
+        self.error: Exception | None = None
+
+    def execute(self, command: SetLikeStateCommand) -> LikeState:
+        self.commands.append(command)
+        if self.error is not None:
+            raise self.error
+        return LikeState(command.tweet_id, 1 if command.liked else 0, command.liked)
+
+
+@pytest.fixture()
+def like_client():
+    from app.composition import current_user_dependency, get_set_like_state
+    from app.main import app
+
+    use_case = RecordingLikeState()
+    actor = PublicUser(ACTOR_ID, "private@example.com", "alice", "Alice Example", NOW, NOW)
+    app.dependency_overrides[get_set_like_state] = lambda: use_case
+    app.dependency_overrides[current_user_dependency] = lambda: actor
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client, use_case
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_like_route_returns_exact_state_for_authenticated_actor(like_client):
+    client, use_case = like_client
+
+    response = client.post(f"/tweets/{TWEET_ID}/like")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tweet_id": str(TWEET_ID),
+        "like_count": 1,
+        "liked_by_actor": True,
+    }
+    assert use_case.commands == [SetLikeStateCommand(TWEET_ID, ACTOR_ID, True)]
+
+
+def test_like_routes_set_state_and_ignore_request_bodies(like_client):
+    client, use_case = like_client
+
+    posted = client.post(f"/tweets/{TWEET_ID}/like", json={"actor_id": "other", "like_count": 99})
+    deleted = client.request("DELETE", f"/tweets/{TWEET_ID}/like", content=b'{"ignored":', headers={"content-type": "application/json"})
+
+    assert posted.status_code == deleted.status_code == 200
+    assert posted.json() == {"tweet_id": str(TWEET_ID), "like_count": 1, "liked_by_actor": True}
+    assert deleted.json() == {"tweet_id": str(TWEET_ID), "like_count": 0, "liked_by_actor": False}
+    assert use_case.commands == [
+        SetLikeStateCommand(TWEET_ID, ACTOR_ID, True),
+        SetLikeStateCommand(TWEET_ID, ACTOR_ID, False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "tweet_id",
+    ["not-a-uuid", "22222222222242228222222222222222", "22222222-2222-1222-8222-222222222222", "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF"],
+)
+@pytest.mark.parametrize("method", ["post", "delete"])
+def test_like_routes_reject_noncanonical_ids_without_use_case(like_client, tweet_id, method):
+    client, use_case = like_client
+
+    response = getattr(client, method)(f"/tweets/{tweet_id}/like")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": "validation_error", "fields": {"tweet_id": "invalid"}}}
+    assert use_case.commands == []
+
+
+def test_like_authentication_precedes_malformed_id():
+    from app.composition import current_user_dependency, get_set_like_state
+    from app.main import app
+
+    use_case = RecordingLikeState()
+    def reject_session():
+        raise Unauthenticated
+
+    app.dependency_overrides[current_user_dependency] = reject_session
+    app.dependency_overrides[get_set_like_state] = lambda: use_case
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            responses = [
+                client.post("/tweets/not-a-uuid/like"),
+                client.delete("/tweets/not-a-uuid/like"),
+            ]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert [response.status_code for response in responses] == [401, 401]
+    assert all(response.json() == {"error": {"code": "unauthenticated"}} for response in responses)
+    assert use_case.commands == []
+
+
+@pytest.mark.parametrize("method", ["post", "delete"])
+def test_like_maps_not_found_without_forbidden_or_conflict(like_client, method):
+    client, use_case = like_client
+    use_case.error = TweetNotFound()
+
+    response = getattr(client, method)(f"/tweets/{TWEET_ID}/like")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": {"code": "not_found"}}
+    assert response.status_code not in {403, 409}

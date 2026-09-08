@@ -17,6 +17,8 @@ from app.infrastructure.database import get_db
 from app.tweets.application.create_tweet import CreateTweet
 from app.tweets.application.delete_tweet import DeleteTweet
 from app.tweets.application.list_tweet_feed import ListTweetFeed
+from app.tweets.application.set_like_state import SetLikeState
+from app.tweets.infrastructure.tweet_like_repository import SQLAlchemyTweetLikeRepository
 from app.tweets.infrastructure.tweet_repository import SQLAlchemyTweetRepository
 from app.tweets.infrastructure.tweet_router import build_tweet_router
 from app.core.settings import get_settings
@@ -108,6 +110,12 @@ def get_delete_tweet(session: Session = Depends(get_db)) -> DeleteTweet:
     return DeleteTweet(repository=SQLAlchemyTweetRepository(session), clock=SystemClock())
 
 
+def get_set_like_state(session: Session = Depends(get_db)) -> SetLikeState:
+    """Provide one transaction-owning like-state use case per request."""
+
+    return SetLikeState(SQLAlchemyTweetLikeRepository(session))
+
+
 def get_search_users(session: Session = Depends(get_db)) -> SearchUsers:
     """Provide one bounded public user search per request."""
 
@@ -143,6 +151,7 @@ tweet_router = build_tweet_router(
     get_list_tweet_feed,
     get_delete_tweet,
     current_user_dependency,
+    get_set_like_state,
 )
 user_social_router = build_user_social_router(
     get_follow_state,
