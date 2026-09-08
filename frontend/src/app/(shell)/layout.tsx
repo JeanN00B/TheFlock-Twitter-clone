@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useSession } from "@/features/auth/session-store";
 import { ComposerProvider, NewPostButton } from "@/features/tweets/composer-dialog";
+import { UserSearch } from "@/features/social/user-search";
 import { ApiError } from "@/lib/api/port";
 import { AppSidebar } from "./app-sidebar";
 
@@ -54,6 +55,7 @@ export default function ShellLayout({ children }: { children: ReactNode }) {
         <ComposerProvider>
           <header className="flex items-center gap-2 border-b p-2">
             <SidebarTrigger />
+            <UserSearch />
             <NewPostButton />
           </header>
           <div className="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>

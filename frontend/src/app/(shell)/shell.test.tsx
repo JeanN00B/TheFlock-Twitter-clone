@@ -103,13 +103,12 @@ describe("home shell (P1 shell+gating)", () => {
     expect(screen.getByTestId("session")).toHaveTextContent("empty");
   });
 
-  it("offers no search affordance and an enabled New-post trigger", async () => {
+  it("offers a user search slot and an enabled New-post trigger", async () => {
+    await loginAsAlice();
     renderShell();
 
-    // Search was removed: no backend search/lookup endpoint exists, so the
-    // shell ships no search slot at all (not even a dead input).
-    expect(screen.queryByRole("search")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/search/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("search")).toBeInTheDocument();
+    expect(screen.getByLabelText(/search users/i)).toBeInTheDocument();
     const trigger = screen.getByRole("button", { name: /new post/i });
     expect(trigger).toBeEnabled();
     fireEvent.click(trigger);

@@ -103,6 +103,13 @@ export interface PublicProfile {
   followedByActor: boolean;
 }
 
+/** Public identity row from search / relationship lists (no PII). */
+export interface PublicIdentity {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly detail?: string;
@@ -184,4 +191,11 @@ export interface BackendGateway {
    * validation_error for a refused change (self-follow).
    */
   setFollow(input: ToggleFollowInput): Promise<FollowState>;
+  /**
+   * GET /users/search?q= — bounded public identity search over the cookie
+   * session. Returns up to 50 `{id,username,displayName}` rows. Rejects
+   * ApiError(401) when logged out and ApiError(422) validation_error when
+   * `q` is missing, empty after trim, duplicated, or longer than 50.
+   */
+  searchUsers(query: string): Promise<PublicIdentity[]>;
 }

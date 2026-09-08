@@ -6,6 +6,7 @@ import {
   type FollowState,
   type LoginInput,
   type PostTweetInput,
+  type PublicIdentity,
   type PublicProfile,
   type RegisterInput,
   type RegistrationResult,
@@ -237,6 +238,34 @@ function mapPublicProfile(raw: unknown): PublicProfile {
   };
 }
 
+function mapPublicIdentity(raw: unknown): PublicIdentity {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 3 ||
+    typeof raw.id !== "string" ||
+    typeof raw.username !== "string" ||
+    typeof raw.display_name !== "string"
+  ) {
+    throw new ApiError(500, "Unexpected search identity shape");
+  }
+  return {
+    id: raw.id,
+    username: raw.username,
+    displayName: raw.display_name,
+  };
+}
+
+function mapSearchResponse(raw: unknown): PublicIdentity[] {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 1 ||
+    !Array.isArray(raw.items)
+  ) {
+    throw new ApiError(500, "Unexpected search shape");
+  }
+  return raw.items.map(mapPublicIdentity);
+}
+
 /**
  * Live fetch adapter. Cookie sessions only: every request uses
  * `credentials: "include"` and never sends an `Authorization` header.
@@ -389,6 +418,14 @@ export function createBackendGateway(
         method: input.following ? "POST" : "DELETE",
       });
       return mapFollowState(raw);
+    },
+    async searchUsers(query: string): Promise<PublicIdentity[]> {
+      const params = new URLSearchParams();
+      params.set("q", query);
+      const raw = await request<unknown>(`/users/search?${params.toString()}`, {
+        method: "GET",
+      });
+      return mapSearchResponse(raw);
     },
   };
 }

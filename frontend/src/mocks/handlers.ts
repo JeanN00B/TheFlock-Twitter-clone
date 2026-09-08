@@ -703,6 +703,47 @@ export const handlers = [
   }),
 
   /**
+   * Public user search mirror: GET /users/search?q=. Literal substring match
+   * over username/display_name (case-insensitive), ordered by username,
+   * capped at 50. Auth precedes validation; invalid q is 422.
+   */
+  http.get("*/users/search", ({ request }) => {
+    const { response } = requireSession();
+    if (response !== null) return response;
+
+    const url = new URL(request.url);
+    const values = url.searchParams.getAll("q");
+    if (values.length !== 1) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { q: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const normalized = values[0]?.trim() ?? "";
+    if (normalized.length < 1 || normalized.length > 50) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { q: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const needle = normalized.toLowerCase();
+    const items = [...accounts.values()]
+      .filter(
+        (account) =>
+          account.username.toLowerCase().includes(needle) ||
+          account.displayName.toLowerCase().includes(needle),
+      )
+      .sort((left, right) => left.username.localeCompare(right.username))
+      .slice(0, 50)
+      .map((account) => ({
+        id: account.id,
+        username: account.username,
+        display_name: account.displayName,
+      }));
+    return HttpResponse.json({ items });
+  }),
+
+  /**
    * Real public profile mirror: GET /users/:username. It follows the
    * backend's canonical username validation and returns only the six
    * public projection fields. Unknown users are 404; malformed handles
