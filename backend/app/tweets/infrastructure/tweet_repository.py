@@ -34,7 +34,10 @@ class SQLAlchemyTweetRepository:
             self._session.flush()
 
     def list_active(
-        self, before: FeedCursor | None, limit: int
+        self,
+        before: FeedCursor | None,
+        limit: int,
+        author_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[PublicTweet, ...]:
         """Return one joined, active-only descending public projection."""
         statement = (
@@ -49,6 +52,8 @@ class SQLAlchemyTweetRepository:
             .join(UserModel, UserModel.public_id == TweetModel.author_public_id)
             .where(TweetModel.deleted_at.is_(None))
         )
+        if author_ids is not None:
+            statement = statement.where(TweetModel.author_public_id.in_(author_ids))
         if before is not None:
             statement = statement.where(
                 tuple_(TweetModel.created_at, TweetModel.public_id)

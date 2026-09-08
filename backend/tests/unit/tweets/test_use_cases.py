@@ -7,7 +7,9 @@ from app.tweets.application.create_tweet import CreateTweet, CreateTweetCommand
 from app.tweets.application.delete_tweet import DeleteTweet, DeleteTweetCommand
 from app.tweets.application.errors import TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQuery
-from app.tweets.application.ports import DeleteOutcome, FeedCursor, FeedKind, FeedScope
+from app.tweets.application.ports import (
+    DeleteOutcome, FeedCursor, FeedKind, FeedScope, ResolvedProfileAuthor,
+)
 from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet, Tweet
 
 
@@ -42,7 +44,7 @@ class RecordingRepository:
     def __init__(self) -> None:
         self.added: list[Tweet] = []
         self.list_result: tuple[PublicTweet, ...] = ()
-        self.list_calls: list[tuple[FeedCursor | None, int]] = []
+        self.list_calls: list[tuple[FeedCursor | None, int, tuple[UUID, ...] | None]] = []
         self.delete_outcome = DeleteOutcome.DELETED
         self.delete_calls: list[tuple[UUID, UUID, datetime]] = []
         self.events: list[str] = []
@@ -54,8 +56,10 @@ class RecordingRepository:
             raise self.add_error
         self.added.append(tweet)
 
-    def list_active(self, before: FeedCursor | None, limit: int) -> tuple[PublicTweet, ...]:
-        self.list_calls.append((before, limit))
+    def list_active(
+        self, before: FeedCursor | None, limit: int, author_ids: tuple[UUID, ...] | None = None
+    ) -> tuple[PublicTweet, ...]:
+        self.list_calls.append((before, limit, author_ids))
         return self.list_result
 
     def soft_delete(
@@ -135,17 +139,60 @@ def test_feed_kinds_and_scope_tokens_are_typed_and_canonical() -> None:
             FeedScope(FeedKind.PROFILE, invalid)
 
 
-def test_list_rejects_scope_mismatch_and_unavailable_personal_scopes_before_query() -> None:
+class RecordingAudience:
+    def __init__(self, ids: tuple[UUID, ...]) -> None:
+        self.ids = ids
+        self.calls: list[UUID] = []
+
+    def following_ids(self, actor_id: UUID) -> tuple[UUID, ...]:
+        self.calls.append(actor_id)
+        return self.ids
+
+
+class RecordingResolver:
+    def __init__(self, result: ResolvedProfileAuthor | None) -> None:
+        self.result = result
+        self.calls: list[str] = []
+
+    def resolve(self, username: str) -> ResolvedProfileAuthor | None:
+        self.calls.append(username)
+        return self.result
+
+
+def test_list_selects_following_and_profile_authors_without_leaking_resolution_to_all() -> None:
+    repository = RecordingRepository()
+    audience = RecordingAudience((ID_2, AUTHOR_ID, ID_2, ID_1))
+    resolver = RecordingResolver(ResolvedProfileAuthor(ID_2, "bob"))
+    use_case = ListTweetFeed(repository, audience, resolver)
+
+    use_case.execute(ListTweetFeedQuery(scope=FeedScope(FeedKind.ALL), actor_id=AUTHOR_ID))
+    use_case.execute(ListTweetFeedQuery(scope=FeedScope(FeedKind.FOLLOWING), actor_id=AUTHOR_ID))
+    use_case.execute(ListTweetFeedQuery(scope=FeedScope(FeedKind.PROFILE, "bob"), actor_id=AUTHOR_ID))
+
+    assert audience.calls == [AUTHOR_ID]
+    assert resolver.calls == ["bob"]
+    assert repository.list_calls == [(None, 21, None), (None, 21, (ID_2, ID_1)), (None, 21, (ID_2,))]
+
+
+def test_empty_following_audience_avoids_tweet_query() -> None:
+    repository = RecordingRepository()
+    page = ListTweetFeed(repository, RecordingAudience(()), RecordingResolver(None)).execute(
+        ListTweetFeedQuery(scope=FeedScope(FeedKind.FOLLOWING), actor_id=AUTHOR_ID)
+    )
+    assert page.items == () and page.next_cursor is None
+    assert repository.list_calls == []
+
+
+def test_list_rejects_scope_mismatch_before_any_resolution() -> None:
     repository = RecordingRepository()
     all_scope = FeedScope(FeedKind.ALL)
     following = FeedScope(FeedKind.FOLLOWING)
     boundary = FeedCursor(created_at=NOW, tweet_id=ID_1, scope=following)
     with pytest.raises(TweetValidationError) as raised:
-        ListTweetFeed(repository).execute(ListTweetFeedQuery(scope=all_scope, before=boundary))
+        ListTweetFeed(repository, RecordingAudience(()), RecordingResolver(None)).execute(
+            ListTweetFeedQuery(scope=all_scope, before=boundary, actor_id=AUTHOR_ID)
+        )
     assert raised.value.fields == {"cursor": "invalid"}
-    with pytest.raises(TweetValidationError) as raised:
-        ListTweetFeed(repository).execute(ListTweetFeedQuery(scope=following))
-    assert raised.value.fields == {"feed": "invalid"}
     assert repository.list_calls == []
 
 
@@ -164,7 +211,7 @@ def test_list_requests_one_lookahead_and_returns_cursor_only_for_more(page_size:
 
     page = ListTweetFeed(repository).execute(ListTweetFeedQuery(page_size=page_size, before=before))
 
-    assert repository.list_calls == [(before, page_size + 1)]
+    assert repository.list_calls == [(before, page_size + 1, None)]
     assert page.items == rows[:page_size]
     assert page.next_cursor == FeedCursor(
         created_at=rows[page_size - 1].created_at,
@@ -179,7 +226,7 @@ def test_list_empty_or_final_page_has_no_cursor(rows: tuple[PublicTweet, ...]) -
     page = ListTweetFeed(repository).execute(ListTweetFeedQuery(page_size=20))
     assert page.items == rows
     assert page.next_cursor is None
-    assert repository.list_calls == [(None, 21)]
+    assert repository.list_calls == [(None, 21, None)]
 
 
 @pytest.mark.parametrize("page_size", [0, 51, True, 1.5, "20"])

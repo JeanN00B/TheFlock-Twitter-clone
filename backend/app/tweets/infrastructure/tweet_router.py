@@ -85,7 +85,7 @@ def build_tweet_router(
     @router.get("", response_model=TweetFeedResponse)
     def list_tweets(
         request: Request,
-        _actor: PublicUser = Depends(current_user_dependency),
+        actor: PublicUser = Depends(current_user_dependency),
         use_case: ListTweetFeed = Depends(list_provider),
     ) -> TweetFeedResponse | JSONResponse:
         feeds = request.query_params.getlist("feed")
@@ -124,9 +124,11 @@ def build_tweet_router(
         except InvalidFeedCursor:
             return _validation_response({"cursor": "invalid"})
         try:
-            page = use_case.execute(ListTweetFeedQuery(page_size, before, scope))
+            page = use_case.execute(ListTweetFeedQuery(page_size, before, scope, actor.id))
         except TweetValidationError as error:
             return _validation_response(error.fields)
+        except TweetNotFound:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found"}})
         return TweetFeedResponse(
             items=[_to_response(item) for item in page.items],
             next_cursor=encode_cursor(page.next_cursor) if page.next_cursor else None,

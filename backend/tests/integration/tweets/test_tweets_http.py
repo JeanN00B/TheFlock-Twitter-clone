@@ -37,6 +37,9 @@ from app.core.settings import get_settings  # noqa: E402
 from app.infrastructure.database import get_engine, get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
 from app.tweets.infrastructure.tweet_model import TweetModel  # noqa: E402
+from app.users.infrastructure.follow_relationship_model import (  # noqa: E402
+    FollowRelationshipModel,
+)
 from app.users.infrastructure.user_model import UserModel  # noqa: E402
 
 PASSWORD = "exact tweet creation password"
@@ -50,6 +53,7 @@ def _alembic_config() -> AlembicConfig:
 
 def _clear_rows(engine) -> None:
     with Session(engine) as session:
+        session.execute(delete(FollowRelationshipModel))
         session.execute(delete(TweetModel))
         session.execute(delete(SessionModel))
         session.execute(delete(UserModel))
@@ -240,10 +244,96 @@ def test_feed_scope_parser_rejects_invalid_or_ambiguous_input_before_tweet_io(
     assert not any("FROM tweets" in " ".join(statement.split()) for statement in statements)
 
 
-def test_valid_personal_scopes_remain_unavailable_until_membership_work_unit(client: TestClient) -> None:
-    _register_and_login(client)
-    assert client.get("/tweets?feed=following").status_code == 422
-    assert client.get("/tweets?feed=profile&username=tweet_author").status_code == 422
+def test_live_scoped_feeds_use_http_membership_exact_projections_and_bounded_queries(
+    client: TestClient,
+    runtime,
+) -> None:
+    actor_id = _register_and_login(client, "feed_actor")
+    actor_tweet = client.post("/tweets", json={"text": "actor tweet"}).json()
+
+    client.cookies.clear()
+    followed_id = _register_and_login(client, "followed_user")
+    followed_tweets = [
+        client.post("/tweets", json={"text": f"followed-{index}"}).json()
+        for index in range(2)
+    ]
+
+    client.cookies.clear()
+    unrelated_id = _register_and_login(client, "unrelated_user")
+    unrelated_tweet = client.post("/tweets", json={"text": "unrelated tweet"}).json()
+
+    client.cookies.clear()
+    assert client.post(
+        "/auth/login",
+        json={"email": "feed_actor@example.com", "password": PASSWORD},
+    ).status_code == 204
+    assert client.post("/users/followed_user/follow").json() == {
+        "username": "followed_user",
+        "following": True,
+    }
+
+    statements: list[str] = []
+    app_engine = get_engine()
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(app_engine, "before_cursor_execute", record)
+    try:
+        first_page = client.get("/tweets?feed=following&page_size=1")
+    finally:
+        event.remove(app_engine, "before_cursor_execute", record)
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert set(first_body) == {"items", "next_cursor"}
+    assert len(first_body["items"]) == 1
+    assert first_body["next_cursor"] is not None
+    assert first_body["items"][0]["author"] == {
+        "id": str(followed_id),
+        "username": "followed_user",
+        "display_name": "Followed User",
+    }
+    assert set(first_body["items"][0]) == {"id", "text", "created_at", "author"}
+    assert sum("FROM follow_relationships" in statement for statement in statements) == 1
+    assert sum("FROM tweets JOIN users" in statement for statement in statements) == 1
+
+    second_page = client.get(
+        "/tweets?feed=following&page_size=1&cursor=" + first_body["next_cursor"]
+    )
+    assert second_page.status_code == 200
+    following_ids = {
+        first_body["items"][0]["id"], second_page.json()["items"][0]["id"]
+    }
+    assert following_ids == {tweet["id"] for tweet in followed_tweets}
+    assert second_page.json()["next_cursor"] is None
+    assert actor_tweet["id"] not in following_ids
+    assert unrelated_tweet["id"] not in following_ids
+
+    self_profile = client.get("/tweets?feed=profile&username=feed_actor")
+    statements.clear()
+    event.listen(app_engine, "before_cursor_execute", record)
+    try:
+        other_profile = client.get("/tweets?feed=profile&username=unrelated_user")
+    finally:
+        event.remove(app_engine, "before_cursor_execute", record)
+    assert sum("FROM users WHERE users.username =" in statement for statement in statements) == 1
+    assert sum("FROM tweets JOIN users" in statement for statement in statements) == 1
+    assert [item["id"] for item in self_profile.json()["items"]] == [actor_tweet["id"]]
+    assert [item["id"] for item in other_profile.json()["items"]] == [unrelated_tweet["id"]]
+    assert self_profile.json()["items"][0]["author"]["id"] == str(actor_id)
+    assert other_profile.json()["items"][0]["author"]["id"] == str(unrelated_id)
+
+    cursor = first_body["next_cursor"]
+    for path in (
+        f"/tweets?cursor={cursor}",
+        f"/tweets?feed=profile&username=followed_user&cursor={cursor}",
+    ):
+        rejected = client.get(path)
+        assert rejected.status_code == 422
+        assert rejected.json() == {
+            "error": {"code": "validation_error", "fields": {"cursor": "invalid"}}
+        }
 
 
 def test_feed_cursor_survives_deleted_boundary_newer_insert_and_page_size_change(client: TestClient, runtime) -> None:

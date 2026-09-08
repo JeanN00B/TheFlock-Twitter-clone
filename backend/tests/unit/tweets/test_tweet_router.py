@@ -172,7 +172,7 @@ def test_feed_defaults_page_size_and_returns_exact_envelope(feed_client):
         "author": {"id": str(ACTOR_ID), "username": "alice", "display_name": "Alice Example"},
     }]
     assert response.json()["next_cursor"]
-    assert use_case.queries == [ListTweetFeedQuery(page_size=20)]
+    assert use_case.queries == [ListTweetFeedQuery(page_size=20, actor_id=ACTOR_ID)]
 
 
 @pytest.mark.parametrize("query", ["page_size=0", "page_size=51", "page_size=", "page_size=1.0", "page_size=true", "page_size=01", "page_size=2&page_size=3"])
@@ -190,7 +190,7 @@ def test_feed_decodes_cursor_and_allows_new_page_size(feed_client):
     cursor = encode_cursor(FeedCursor(NOW, TWEET_ID))
     response = client.get(f"/tweets?page_size=50&cursor={cursor}")
     assert response.status_code == 200
-    assert use_case.queries == [ListTweetFeedQuery(page_size=50, before=FeedCursor(NOW, TWEET_ID))]
+    assert use_case.queries == [ListTweetFeedQuery(page_size=50, before=FeedCursor(NOW, TWEET_ID), actor_id=ACTOR_ID)]
 
 
 @pytest.mark.parametrize("query", ["cursor=", "cursor=bad%", "cursor=a&cursor=b"])

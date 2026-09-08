@@ -68,6 +68,20 @@ class FeedCursor:
             raise ValueError("invalid feed scope")
 
 
+@dataclass(frozen=True)
+class ResolvedProfileAuthor:
+    id: UUID
+    username: str
+
+
+class FollowingAudience(Protocol):
+    def following_ids(self, actor_id: UUID) -> tuple[UUID, ...]: ...
+
+
+class ProfileAuthorResolver(Protocol):
+    def resolve(self, username: str) -> ResolvedProfileAuthor | None: ...
+
+
 class DeleteOutcome(Enum):
     DELETED = "deleted"
     NOT_FOUND = "not_found"
@@ -78,7 +92,10 @@ class TweetRepository(Protocol):
     def add(self, tweet: Tweet) -> None: ...
 
     def list_active(
-        self, before: FeedCursor | None, limit: int
+        self,
+        before: FeedCursor | None,
+        limit: int,
+        author_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[PublicTweet, ...]: ...
 
     def soft_delete(

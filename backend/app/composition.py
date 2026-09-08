@@ -28,6 +28,10 @@ from app.users.infrastructure.follow_relationship_repository import SQLAlchemyFo
 from app.users.infrastructure.public_social_read_repository import SQLAlchemyPublicSocialReadRepository
 from app.users.infrastructure.public_user_lookup import SQLAlchemyPublicUserLookup
 from app.users.infrastructure.user_social_router import build_user_social_router
+from app.users.infrastructure.tweet_audience import (
+    SQLAlchemyFollowingAudience,
+    SQLAlchemyProfileAuthorResolver,
+)
 from app.users.infrastructure.registration_support import (
     SystemClock,
     Uuid4Generator,
@@ -89,9 +93,13 @@ def get_create_tweet(session: Session = Depends(get_db)) -> CreateTweet:
 
 
 def get_list_tweet_feed(session: Session = Depends(get_db)) -> ListTweetFeed:
-    """Provide one global active-tweet feed use case per request."""
+    """Provide one scoped active-tweet feed use case per request."""
 
-    return ListTweetFeed(repository=SQLAlchemyTweetRepository(session))
+    return ListTweetFeed(
+        repository=SQLAlchemyTweetRepository(session),
+        audience=SQLAlchemyFollowingAudience(session),
+        profile_resolver=SQLAlchemyProfileAuthorResolver(session),
+    )
 
 
 def get_delete_tweet(session: Session = Depends(get_db)) -> DeleteTweet:

@@ -48,6 +48,13 @@ class TweetModel(Base):
             text("public_id DESC"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "ix_tweets_active_author_timeline_created_at_public_id_desc",
+            "author_public_id",
+            text("created_at DESC"),
+            text("public_id DESC"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)

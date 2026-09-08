@@ -235,6 +235,9 @@ def test_list_active_is_joined_private_free_ordered_and_boundary_safe(db_session
     assert {item.author.username for item in items} == {"alice", "bob"}
     assert all(set(vars(item.author)) == {"id", "username", "display_name"} for item in items)
 
+    assert [item.id for item in repository.list_active(None, 10, (first_author,))] == [lower, older]
+    assert repository.list_active(None, 10, ()) == ()
+
     outcome = repository.soft_delete(lower, first_author, NOW + timedelta(seconds=1))
     assert outcome is DeleteOutcome.DELETED
     assert [item.id for item in repository.list_active(FeedCursor(NOW, lower), 10)] == [older]
