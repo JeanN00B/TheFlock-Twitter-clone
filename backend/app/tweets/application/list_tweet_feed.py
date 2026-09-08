@@ -49,8 +49,10 @@ class ListTweetFeed:
             raise TweetValidationError({"cursor"})
 
         author_ids: tuple[UUID, ...] | None = None
+        if query.actor_id is None:
+            raise TweetValidationError({"feed"})
         if query.scope.kind is FeedKind.FOLLOWING:
-            if query.actor_id is None or self._audience is None:
+            if self._audience is None:
                 raise TweetValidationError({"feed"})
             author_ids = tuple(dict.fromkeys(
                 value for value in self._audience.following_ids(query.actor_id)
@@ -66,7 +68,9 @@ class ListTweetFeed:
                 raise TweetNotFound
             author_ids = (resolved.id,)
 
-        rows = self._repository.list_active(query.before, query.page_size + 1, author_ids)
+        rows = self._repository.list_active(
+            query.before, query.page_size + 1, query.actor_id, author_ids
+        )
         has_more = len(rows) > query.page_size
         items = rows[: query.page_size]
         next_cursor = None

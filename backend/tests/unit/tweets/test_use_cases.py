@@ -44,7 +44,7 @@ class RecordingRepository:
     def __init__(self) -> None:
         self.added: list[Tweet] = []
         self.list_result: tuple[PublicTweet, ...] = ()
-        self.list_calls: list[tuple[FeedCursor | None, int, tuple[UUID, ...] | None]] = []
+        self.list_calls: list[tuple[FeedCursor | None, int, UUID, tuple[UUID, ...] | None]] = []
         self.delete_outcome = DeleteOutcome.DELETED
         self.delete_calls: list[tuple[UUID, UUID, datetime]] = []
         self.events: list[str] = []
@@ -57,9 +57,13 @@ class RecordingRepository:
         self.added.append(tweet)
 
     def list_active(
-        self, before: FeedCursor | None, limit: int, author_ids: tuple[UUID, ...] | None = None
+        self,
+        before: FeedCursor | None,
+        limit: int,
+        actor_id: UUID,
+        author_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[PublicTweet, ...]:
-        self.list_calls.append((before, limit, author_ids))
+        self.list_calls.append((before, limit, actor_id, author_ids))
         return self.list_result
 
     def soft_delete(
@@ -70,7 +74,14 @@ class RecordingRepository:
 
 
 def public_tweet(tweet_id: UUID, created_at: datetime = NOW) -> PublicTweet:
-    return PublicTweet(id=tweet_id, text="hello", created_at=created_at, author=AUTHOR)
+    return PublicTweet(
+        id=tweet_id,
+        text="hello",
+        created_at=created_at,
+        author=AUTHOR,
+        like_count=0,
+        liked_by_actor=False,
+    )
 
 
 def build_create(ids: list[UUID] | None = None):
@@ -101,6 +112,8 @@ def test_create_uses_actor_identity_one_id_one_instant_and_commits_first() -> No
     ]
     assert result == public_tweet(ID_1)
     assert result.author == AUTHOR
+    assert result.like_count == 0
+    assert result.liked_by_actor is False
 
 
 def test_create_rejects_invalid_text_before_side_effects() -> None:
@@ -159,7 +172,7 @@ class RecordingResolver:
         return self.result
 
 
-def test_list_selects_following_and_profile_authors_without_leaking_resolution_to_all() -> None:
+def test_list_selects_authors_and_forwards_actor_id_to_every_projection() -> None:
     repository = RecordingRepository()
     audience = RecordingAudience((ID_2, AUTHOR_ID, ID_2, ID_1))
     resolver = RecordingResolver(ResolvedProfileAuthor(ID_2, "bob"))
@@ -171,7 +184,11 @@ def test_list_selects_following_and_profile_authors_without_leaking_resolution_t
 
     assert audience.calls == [AUTHOR_ID]
     assert resolver.calls == ["bob"]
-    assert repository.list_calls == [(None, 21, None), (None, 21, (ID_2, ID_1)), (None, 21, (ID_2,))]
+    assert repository.list_calls == [
+        (None, 21, AUTHOR_ID, None),
+        (None, 21, AUTHOR_ID, (ID_2, ID_1)),
+        (None, 21, AUTHOR_ID, (ID_2,)),
+    ]
 
 
 def test_empty_following_audience_avoids_tweet_query() -> None:
@@ -209,9 +226,11 @@ def test_list_requests_one_lookahead_and_returns_cursor_only_for_more(page_size:
     repository.list_result = rows
     before = FeedCursor(created_at=NOW + timedelta(seconds=1), tweet_id=ID_2)
 
-    page = ListTweetFeed(repository).execute(ListTweetFeedQuery(page_size=page_size, before=before))
+    page = ListTweetFeed(repository).execute(
+        ListTweetFeedQuery(page_size=page_size, before=before, actor_id=AUTHOR_ID)
+    )
 
-    assert repository.list_calls == [(before, page_size + 1, None)]
+    assert repository.list_calls == [(before, page_size + 1, AUTHOR_ID, None)]
     assert page.items == rows[:page_size]
     assert page.next_cursor == FeedCursor(
         created_at=rows[page_size - 1].created_at,
@@ -223,10 +242,12 @@ def test_list_requests_one_lookahead_and_returns_cursor_only_for_more(page_size:
 def test_list_empty_or_final_page_has_no_cursor(rows: tuple[PublicTweet, ...]) -> None:
     repository = RecordingRepository()
     repository.list_result = rows
-    page = ListTweetFeed(repository).execute(ListTweetFeedQuery(page_size=20))
+    page = ListTweetFeed(repository).execute(
+        ListTweetFeedQuery(page_size=20, actor_id=AUTHOR_ID)
+    )
     assert page.items == rows
     assert page.next_cursor is None
-    assert repository.list_calls == [(None, 21, None)]
+    assert repository.list_calls == [(None, 21, AUTHOR_ID, None)]
 
 
 @pytest.mark.parametrize("page_size", [0, 51, True, 1.5, "20"])
@@ -256,7 +277,9 @@ def test_feed_cursor_rejects_non_utc_or_non_v4_boundary() -> None:
 def test_same_time_feed_boundary_uses_last_returned_uuid() -> None:
     repository = RecordingRepository()
     repository.list_result = (public_tweet(ID_2), public_tweet(ID_1))
-    page = ListTweetFeed(repository).execute(ListTweetFeedQuery(page_size=1))
+    page = ListTweetFeed(repository).execute(
+        ListTweetFeedQuery(page_size=1, actor_id=AUTHOR_ID)
+    )
     assert page.items == (public_tweet(ID_2),)
     assert page.next_cursor == FeedCursor(created_at=NOW, tweet_id=ID_2)
 

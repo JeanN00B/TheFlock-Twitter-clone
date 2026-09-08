@@ -55,4 +55,6 @@ class CreateTweet:
             text=tweet.text,
             created_at=tweet.created_at,
             author=author,
+            like_count=0,
+            liked_by_actor=False,
         )

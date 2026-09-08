@@ -36,6 +36,8 @@ class TweetResponse(BaseModel):
     text: str
     created_at: datetime
     author: AuthorResponse
+    like_count: int
+    liked_by_actor: bool
     model_config = ConfigDict(extra="forbid")
 
     @field_serializer("created_at")
@@ -62,8 +64,16 @@ def _validation_response(fields: dict[str, str]) -> JSONResponse:
 
 def _to_response(tweet: PublicTweet) -> TweetResponse:
     return TweetResponse(
-        id=tweet.id, text=tweet.text, created_at=tweet.created_at,
-        author=AuthorResponse(id=tweet.author.id, username=tweet.author.username, display_name=tweet.author.display_name),
+        id=tweet.id,
+        text=tweet.text,
+        created_at=tweet.created_at,
+        author=AuthorResponse(
+            id=tweet.author.id,
+            username=tweet.author.username,
+            display_name=tweet.author.display_name,
+        ),
+        like_count=tweet.like_count,
+        liked_by_actor=tweet.liked_by_actor,
     )
 
 

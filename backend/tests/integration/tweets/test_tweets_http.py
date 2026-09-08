@@ -126,7 +126,9 @@ def test_create_commits_actor_owned_exact_public_tweet(client: TestClient, runti
 
     assert first.status_code == second.status_code == 201
     assert first.json()["text"] == "hello  world"
-    assert set(first.json()) == {"id", "text", "created_at", "author"}
+    assert set(first.json()) == {"id", "text", "created_at", "author", "like_count", "liked_by_actor"}
+    assert first.json()["like_count"] == 0
+    assert first.json()["liked_by_actor"] is False
     assert first.json()["author"] == {
         "id": str(actor_id),
         "username": "tweet_author",
@@ -193,10 +195,61 @@ def test_feed_is_global_tied_order_exact_and_one_joined_query(client: TestClient
     assert set(body) == {"items", "next_cursor"}
     assert [item["id"] for item in body["items"]] == sorted([first["id"], second["id"]], reverse=True)
     assert {item["author"]["username"] for item in body["items"]} == {"first_author", "second_author"}
-    assert all(set(item) == {"id", "text", "created_at", "author"} for item in body["items"])
+    assert all(
+        set(item) == {"id", "text", "created_at", "author", "like_count", "liked_by_actor"}
+        for item in body["items"]
+    )
+    assert all(item["like_count"] == 0 and item["liked_by_actor"] is False for item in body["items"])
     assert all(set(item["author"]) == {"id", "username", "display_name"} for item in body["items"])
     assert body["next_cursor"] is None
     assert sum("FROM tweets JOIN users" in " ".join(statement.split()) for statement in statements) == 1
+
+
+def test_feed_like_fields_are_actor_relative_and_do_not_alter_cursor_membership(
+    client: TestClient,
+) -> None:
+    _register_and_login(client, "like_viewer")
+    first = client.post("/tweets", json={"text": "alpha"}).json()
+    second = client.post("/tweets", json={"text": "beta"}).json()
+    assert first["like_count"] == 0 and first["liked_by_actor"] is False
+
+    liked = client.post(f"/tweets/{first['id']}/like")
+    assert liked.status_code == 200
+    assert liked.json() == {
+        "tweet_id": first["id"],
+        "like_count": 1,
+        "liked_by_actor": True,
+    }
+
+    page_one = client.get("/tweets?page_size=1")
+    assert page_one.status_code == 200
+    assert page_one.json()["items"][0]["id"] == second["id"]
+    assert page_one.json()["items"][0]["like_count"] == 0
+    assert page_one.json()["items"][0]["liked_by_actor"] is False
+    cursor = page_one.json()["next_cursor"]
+    assert cursor is not None
+
+    assert client.post(f"/tweets/{second['id']}/like").status_code == 200
+
+    page_two = client.get(f"/tweets?page_size=1&cursor={cursor}")
+    assert page_two.status_code == 200
+    assert page_two.json()["items"][0]["id"] == first["id"]
+    assert page_two.json()["items"][0]["like_count"] == 1
+    assert page_two.json()["items"][0]["liked_by_actor"] is True
+    assert page_two.json()["next_cursor"] is None
+
+    client.cookies.clear()
+    _register_and_login(client, "other_viewer")
+    other_feed = client.get("/tweets?page_size=50").json()["items"]
+    by_id = {item["id"]: item for item in other_feed}
+    assert by_id[first["id"]]["like_count"] == 1
+    assert by_id[first["id"]]["liked_by_actor"] is False
+    assert by_id[second["id"]]["like_count"] == 1
+    assert by_id[second["id"]]["liked_by_actor"] is False
+    assert all(
+        set(item) == {"id", "text", "created_at", "author", "like_count", "liked_by_actor"}
+        for item in other_feed
+    )
 
 
 def test_omitted_and_explicit_all_are_equivalent_and_emit_scope_bound_v2(client: TestClient) -> None:
@@ -296,7 +349,14 @@ def test_live_scoped_feeds_use_http_membership_exact_projections_and_bounded_que
         "username": "followed_user",
         "display_name": "Followed User",
     }
-    assert set(first_body["items"][0]) == {"id", "text", "created_at", "author"}
+    assert set(first_body["items"][0]) == {
+        "id",
+        "text",
+        "created_at",
+        "author",
+        "like_count",
+        "liked_by_actor",
+    }
     assert sum("FROM follow_relationships" in statement for statement in statements) == 1
     assert sum("FROM tweets JOIN users" in statement for statement in statements) == 1
 

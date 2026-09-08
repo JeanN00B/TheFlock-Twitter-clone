@@ -3,11 +3,12 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import exists, func, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.tweets.application.ports import DeleteOutcome, FeedCursor
 from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet, Tweet
+from app.tweets.infrastructure.tweet_like_model import TweetLikeModel
 from app.tweets.infrastructure.tweet_model import TweetModel
 from app.users.infrastructure.user_model import UserModel
 
@@ -37,9 +38,25 @@ class SQLAlchemyTweetRepository:
         self,
         before: FeedCursor | None,
         limit: int,
+        actor_id: UUID,
         author_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[PublicTweet, ...]:
         """Return one joined, active-only descending public projection."""
+        like_count = (
+            select(func.count())
+            .select_from(TweetLikeModel)
+            .where(TweetLikeModel.tweet_public_id == TweetModel.public_id)
+            .scalar_subquery()
+            .label("like_count")
+        )
+        liked_by_actor = (
+            exists()
+            .where(
+                TweetLikeModel.tweet_public_id == TweetModel.public_id,
+                TweetLikeModel.actor_public_id == actor_id,
+            )
+            .label("liked_by_actor")
+        )
         statement = (
             select(
                 TweetModel.public_id,
@@ -48,6 +65,8 @@ class SQLAlchemyTweetRepository:
                 UserModel.public_id.label("author_id"),
                 UserModel.username,
                 UserModel.display_name,
+                like_count,
+                liked_by_actor,
             )
             .join(UserModel, UserModel.public_id == TweetModel.author_public_id)
             .where(TweetModel.deleted_at.is_(None))
@@ -75,6 +94,8 @@ class SQLAlchemyTweetRepository:
                     username=row.username,
                     display_name=row.display_name,
                 ),
+                like_count=int(row.like_count),
+                liked_by_actor=bool(row.liked_by_actor),
             )
             for row in rows
         )

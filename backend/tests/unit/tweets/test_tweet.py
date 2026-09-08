@@ -89,10 +89,26 @@ def test_timestamps_must_be_utc_not_merely_aware() -> None:
 
 def test_public_values_are_frozen_exact_allowlists() -> None:
     author = PublicAuthorSummary(id=AUTHOR_ID, username="alice", display_name="Alice")
-    public = PublicTweet(id=TWEET_ID, text="hello", created_at=NOW, author=author)
+    public = PublicTweet(
+        id=TWEET_ID,
+        text="hello",
+        created_at=NOW,
+        author=author,
+        like_count=0,
+        liked_by_actor=False,
+    )
 
     assert {item.name for item in fields(author)} == {"id", "username", "display_name"}
-    assert {item.name for item in fields(public)} == {"id", "text", "created_at", "author"}
+    assert {item.name for item in fields(public)} == {
+        "id",
+        "text",
+        "created_at",
+        "author",
+        "like_count",
+        "liked_by_actor",
+    }
+    assert public.like_count == 0
+    assert public.liked_by_actor is False
     assert not hasattr(public, "updated_at")
     assert not hasattr(public, "deleted_at")
     with pytest.raises(FrozenInstanceError):
@@ -112,6 +128,24 @@ def test_public_values_are_frozen_exact_allowlists() -> None:
             text="hello",
             created_at=NOW.replace(tzinfo=None),
             author=PublicAuthorSummary(id=AUTHOR_ID, username="alice", display_name="Alice"),
+            like_count=0,
+            liked_by_actor=False,
+        ),
+        lambda: PublicTweet(
+            id=TWEET_ID,
+            text="hello",
+            created_at=NOW,
+            author=PublicAuthorSummary(id=AUTHOR_ID, username="alice", display_name="Alice"),
+            like_count=-1,
+            liked_by_actor=False,
+        ),
+        lambda: PublicTweet(
+            id=TWEET_ID,
+            text="hello",
+            created_at=NOW,
+            author=PublicAuthorSummary(id=AUTHOR_ID, username="alice", display_name="Alice"),
+            like_count=0,
+            liked_by_actor=1,  # type: ignore[arg-type]
         ),
     ],
 )

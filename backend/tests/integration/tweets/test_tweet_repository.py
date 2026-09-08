@@ -229,22 +229,68 @@ def test_list_active_is_joined_private_free_ordered_and_boundary_safe(db_session
             statements.append(statement)
     event.listen(db_session.bind, "before_cursor_execute", observe)
     try:
-        items = repository.list_active(None, 10)
+        items = repository.list_active(None, 10, first_author)
     finally:
         event.remove(db_session.bind, "before_cursor_execute", observe)
     assert [item.id for item in items] == [upper, lower, older]
     assert len(statements) == 1
     assert {item.author.username for item in items} == {"alice", "bob"}
     assert all(set(vars(item.author)) == {"id", "username", "display_name"} for item in items)
+    assert all(item.like_count == 0 and item.liked_by_actor is False for item in items)
 
-    assert [item.id for item in repository.list_active(None, 10, (first_author,))] == [lower, older]
-    assert repository.list_active(None, 10, ()) == ()
+    assert [item.id for item in repository.list_active(None, 10, first_author, (first_author,))] == [lower, older]
+    assert repository.list_active(None, 10, first_author, ()) == ()
 
     outcome = repository.soft_delete(lower, first_author, NOW + timedelta(seconds=1))
     assert outcome is DeleteOutcome.DELETED
-    assert [item.id for item in repository.list_active(FeedCursor(NOW, lower), 10)] == [older]
+    assert [item.id for item in repository.list_active(FeedCursor(NOW, lower), 10, first_author)] == [older]
     retained = db_session.execute(select(TweetModel).where(TweetModel.public_id == lower)).scalar_one()
     assert retained.deleted_at == NOW + timedelta(seconds=1)
+
+
+def test_list_active_enriches_exact_actor_relative_like_state_in_one_query(
+    db_session: Session,
+) -> None:
+    actor = _user(db_session, username="actor")
+    other = _user(db_session, username="other")
+    liked = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    unliked = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    multi = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+    repository = SQLAlchemyTweetRepository(db_session)
+    repository.add(_tweet(other, public_id=liked, text_value="liked"))
+    repository.add(_tweet(other, public_id=unliked, text_value="unliked"))
+    repository.add(_tweet(other, public_id=multi, text_value="multi"))
+    with db_session.begin():
+        db_session.add(TweetLikeModel(tweet_public_id=liked, actor_public_id=actor))
+        db_session.add(TweetLikeModel(tweet_public_id=multi, actor_public_id=actor))
+        db_session.add(TweetLikeModel(tweet_public_id=multi, actor_public_id=other))
+
+    statements: list[str] = []
+
+    def observe(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", observe)
+    try:
+        items = repository.list_active(None, 10, actor)
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", observe)
+
+    by_id = {item.id: item for item in items}
+    assert len(statements) == 1
+    assert by_id[liked].like_count == 1 and by_id[liked].liked_by_actor is True
+    assert by_id[unliked].like_count == 0 and by_id[unliked].liked_by_actor is False
+    assert by_id[multi].like_count == 2 and by_id[multi].liked_by_actor is True
+    assert all(
+        set(vars(item)) == {"id", "text", "created_at", "author", "like_count", "liked_by_actor"}
+        for item in items
+    )
+    assert all(not hasattr(item, "likers") for item in items)
+
+    other_view = {item.id: item for item in repository.list_active(None, 10, other)}
+    assert other_view[liked].like_count == 1 and other_view[liked].liked_by_actor is False
+    assert other_view[multi].like_count == 2 and other_view[multi].liked_by_actor is True
 
 
 def test_soft_delete_classifies_and_rolls_back(db_session: Session, monkeypatch) -> None:

@@ -108,6 +108,8 @@ class PublicTweet:
     text: str
     created_at: datetime
     author: PublicAuthorSummary
+    like_count: int
+    liked_by_actor: bool
 
     def __post_init__(self) -> None:
         _require_uuid4(self.id, "id")
@@ -117,3 +119,7 @@ class PublicTweet:
         _require_utc(self.created_at, "created_at")
         if type(self.author) is not PublicAuthorSummary:
             raise ValueError("author must be a public author summary")
+        if type(self.like_count) is not int or not 0 <= self.like_count <= MAX_LIKE_COUNT:
+            raise ValueError("like_count must be an integer in the PostgreSQL BIGINT range")
+        if type(self.liked_by_actor) is not bool:
+            raise ValueError("liked_by_actor must be a boolean")

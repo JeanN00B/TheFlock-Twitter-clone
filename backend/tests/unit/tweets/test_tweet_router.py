@@ -39,6 +39,8 @@ class RecordingCreateTweet:
                 username=command.author_username,
                 display_name=command.author_display_name,
             ),
+            like_count=0,
+            liked_by_actor=False,
         )
 
 
@@ -80,6 +82,8 @@ def test_create_uses_authenticated_actor_and_returns_exact_public_projection(cre
             "username": "alice",
             "display_name": "Alice Example",
         },
+        "like_count": 0,
+        "liked_by_actor": False,
     }
     assert use_case.commands == [
         CreateTweetCommand(
@@ -144,7 +148,14 @@ class RecordingListTweetFeed:
 
     def execute(self, query: ListTweetFeedQuery) -> TweetPage:
         self.queries.append(query)
-        item = PublicTweet(TWEET_ID, "hello", NOW, PublicAuthorSummary(ACTOR_ID, "alice", "Alice Example"))
+        item = PublicTweet(
+            TWEET_ID,
+            "hello",
+            NOW,
+            PublicAuthorSummary(ACTOR_ID, "alice", "Alice Example"),
+            like_count=3,
+            liked_by_actor=True,
+        )
         return TweetPage((item,), FeedCursor(NOW, TWEET_ID))
 
 
@@ -182,6 +193,8 @@ def test_feed_defaults_page_size_and_returns_exact_envelope(feed_client):
     assert response.json()["items"] == [{
         "id": str(TWEET_ID), "text": "hello", "created_at": "2026-09-07T12:34:56.123456Z",
         "author": {"id": str(ACTOR_ID), "username": "alice", "display_name": "Alice Example"},
+        "like_count": 3,
+        "liked_by_actor": True,
     }]
     assert response.json()["next_cursor"]
     assert use_case.queries == [ListTweetFeedQuery(page_size=20, actor_id=ACTOR_ID)]

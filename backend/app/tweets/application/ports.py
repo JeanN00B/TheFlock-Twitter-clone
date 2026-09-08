@@ -100,6 +100,7 @@ class TweetRepository(Protocol):
         self,
         before: FeedCursor | None,
         limit: int,
+        actor_id: UUID,
         author_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[PublicTweet, ...]: ...
 
