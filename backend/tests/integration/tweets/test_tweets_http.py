@@ -222,7 +222,7 @@ def test_omitted_and_explicit_all_are_equivalent_and_emit_scope_bound_v2(client:
         ("feed=all&feed=all", "feed"), ("username=alice", "username"),
         ("feed=all&username=alice", "username"),
         ("feed=following&username=alice", "username"),
-        ("feed=profile", "username"), ("feed=profile&username=Alice", "username"),
+        ("feed=profile", "username"),
         ("feed=profile&username=alice&username=bob", "username"),
     ],
 )
@@ -259,7 +259,7 @@ def test_live_scoped_feeds_use_http_membership_exact_projections_and_bounded_que
     ]
 
     client.cookies.clear()
-    unrelated_id = _register_and_login(client, "unrelated_user")
+    unrelated_id = _register_and_login(client, "case_check")
     unrelated_tweet = client.post("/tweets", json={"text": "unrelated tweet"}).json()
 
     client.cookies.clear()
@@ -314,7 +314,7 @@ def test_live_scoped_feeds_use_http_membership_exact_projections_and_bounded_que
     statements.clear()
     event.listen(app_engine, "before_cursor_execute", record)
     try:
-        other_profile = client.get("/tweets?feed=profile&username=unrelated_user")
+        other_profile = client.get("/tweets?feed=profile&username=%20CASE_CHECK%20")
     finally:
         event.remove(app_engine, "before_cursor_execute", record)
     assert sum("FROM users WHERE users.username =" in statement for statement in statements) == 1

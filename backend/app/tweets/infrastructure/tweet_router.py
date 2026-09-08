@@ -15,7 +15,7 @@ from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQ
 from app.tweets.application.ports import FeedKind, FeedScope
 from app.tweets.domain.tweet import PublicTweet
 from app.tweets.infrastructure.cursor import decode_cursor, encode_cursor
-from app.users.domain.user import PublicUser
+from app.users.domain.user import PublicUser, canonicalize_username
 
 
 class CreateTweetRequest(BaseModel):
@@ -98,8 +98,8 @@ def build_tweet_router(
         username = usernames[0] if usernames else None
         if feed == FeedKind.PROFILE.value:
             try:
-                scope = FeedScope(FeedKind.PROFILE, username)
-            except ValueError:
+                scope = FeedScope(FeedKind.PROFILE, canonicalize_username(username))
+            except (TypeError, ValueError):
                 return _validation_response({"username": "invalid"})
         else:
             if username is not None:

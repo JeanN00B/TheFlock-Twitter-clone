@@ -162,6 +162,16 @@ def feed_client():
         app.dependency_overrides.clear()
 
 
+def test_profile_feed_canonicalizes_username_before_query(feed_client):
+    from app.tweets.application.ports import FeedKind, FeedScope
+
+    client, use_case = feed_client
+    response = client.get("/tweets?feed=profile&username=%20CASE_CHECK%20")
+
+    assert response.status_code == 200
+    assert use_case.queries == [ListTweetFeedQuery(scope=FeedScope(FeedKind.PROFILE, "case_check"), actor_id=ACTOR_ID)]
+
+
 def test_feed_defaults_page_size_and_returns_exact_envelope(feed_client):
     client, use_case = feed_client
     response = client.get("/tweets")
