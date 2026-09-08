@@ -22,7 +22,7 @@ from app.tweets.infrastructure.tweet_router import build_tweet_router
 from app.core.settings import get_settings
 from app.users.application.credential_lookup import UserCredentialLookup
 from app.users.application.follow_relationships import SetFollowState
-from app.users.application.public_social_reads import SearchUsers
+from app.users.application.public_social_reads import GetPublicProfile, SearchUsers
 from app.users.infrastructure.credential_lookup import SQLAlchemyUserCredentialLookup
 from app.users.infrastructure.follow_relationship_repository import SQLAlchemyFollowRelationshipRepository
 from app.users.infrastructure.public_social_read_repository import SQLAlchemyPublicSocialReadRepository
@@ -106,6 +106,12 @@ def get_search_users(session: Session = Depends(get_db)) -> SearchUsers:
     return SearchUsers(SQLAlchemyPublicSocialReadRepository(session))
 
 
+def get_public_profile(session: Session = Depends(get_db)) -> GetPublicProfile:
+    """Provide one privacy-safe public profile read per request."""
+
+    return GetPublicProfile(SQLAlchemyPublicSocialReadRepository(session))
+
+
 def get_follow_state(session: Session = Depends(get_db)) -> SetFollowState:
     """Provide one transaction-owning follow transition per request."""
 
@@ -128,4 +134,5 @@ user_social_router = build_user_social_router(
     get_follow_state,
     current_user_dependency,
     get_search_users,
+    get_public_profile,
 )

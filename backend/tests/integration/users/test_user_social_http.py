@@ -16,7 +16,13 @@ from app.users.application.follow_relationships import (
     FollowValidationError,
     UserNotFound,
 )
-from app.users.application.public_social_reads import PublicIdentity, SearchValidationError
+from app.users.application.public_social_reads import (
+    ProfileNotFound,
+    ProfileValidationError,
+    PublicIdentity,
+    PublicProfile,
+    SearchValidationError,
+)
 from app.users.domain.user import PublicUser
 from app.users.infrastructure.user_social_router import build_user_social_router
 
@@ -34,6 +40,19 @@ class RecordingSearch:
             raise SearchValidationError()
         self.terms.append(term)
         return self.results
+
+
+class RecordingProfile:
+    def __init__(self) -> None:
+        self.calls = []
+        self.error = None
+        self.result = PublicProfile(ACTOR_ID, "alice_42", "Alice", 3, 2, False)
+
+    def execute(self, username, actor_id):
+        self.calls.append((username, actor_id))
+        if self.error:
+            raise self.error
+        return self.result
 
 
 class RecordingUseCase:
@@ -63,6 +82,7 @@ def client_for(
     use_case: RecordingUseCase,
     authenticated: bool = True,
     search: RecordingSearch | None = None,
+    profile: RecordingProfile | None = None,
 ) -> TestClient:
     app = FastAPI()
 
@@ -76,6 +96,7 @@ def client_for(
             lambda: use_case,
             current_user,
             search_provider=lambda: search or RecordingSearch(),
+            profile_provider=lambda: profile or RecordingProfile(),
         )
     )
 
@@ -184,6 +205,38 @@ def test_search_authentication_precedes_query_validation_and_use_case() -> None:
 
     assert response.status_code == 401
     assert search.terms == []
+
+
+def test_profile_returns_exact_projection_and_maps_errors() -> None:
+    profile = RecordingProfile()
+    with client_for(RecordingUseCase(), profile=profile) as client:
+        response = client.get("/users/%20ALICE_42%20")
+        profile.error = ProfileNotFound()
+        missing = client.get("/users/missing_42")
+        profile.error = ProfileValidationError()
+        invalid = client.get("/users/a-")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": str(ACTOR_ID), "username": "alice_42", "display_name": "Alice",
+        "followers_count": 3, "following_count": 2, "followed_by_actor": False,
+    }
+    assert profile.calls[0] == (" ALICE_42 ", ACTOR_ID)
+    assert missing.json() == {"error": {"code": "not_found"}}
+    assert invalid.json() == {
+        "error": {"code": "validation_error", "fields": {"username": "invalid"}}
+    }
+    assert "private@example.com" not in response.text
+
+
+def test_profile_authentication_precedes_target_resolution() -> None:
+    profile = RecordingProfile()
+    with client_for(RecordingUseCase(), authenticated=False, profile=profile) as client:
+        response = client.get("/users/missing_42")
+
+    assert response.status_code == 401
+    assert response.json() == {"error": {"code": "unauthenticated"}}
+    assert profile.calls == []
 
 
 @pytest.fixture()
@@ -317,6 +370,51 @@ def test_composed_search_is_literal_bounded_ordered_and_private_safe(live_social
     ]
     assert all(list(item) == ["id", "username", "display_name"] for item in capped.json()["items"])
     assert all("email" not in item and "password" not in item for item in capped.json()["items"])
+
+
+@pytest.mark.integration
+def test_composed_profile_is_one_statement_exact_and_viewer_relative(live_social_runtime) -> None:
+    app, engine = live_social_runtime
+    with TestClient(app, raise_server_exceptions=False) as client:
+        actor_id = _register_and_login(client, "viewer_1")
+        client.cookies.clear()
+        target_id = _register_and_login(client, "target_1")
+        client.cookies.clear()
+        _register_and_login(client, "follower_1")
+        assert client.post("/users/target_1/follow").status_code == 200
+        client.cookies.clear()
+        assert client.post("/auth/login", json={
+            "email": "viewer_1@example.com", "password": "valid password"
+        }).status_code == 204
+        assert client.post("/users/target_1/follow").status_code == 200
+
+        from sqlalchemy import event
+        statements: list[str] = []
+        def observe(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+        event.listen(engine, "before_cursor_execute", observe)
+        try:
+            target = client.get("/users/TARGET_1")
+        finally:
+            event.remove(engine, "before_cursor_execute", observe)
+        self_view = client.get("/users/viewer_1")
+        missing = client.get("/users/missing_1")
+
+    profile_statements = [statement for statement in statements if "follow_relationships" in statement]
+    assert len(profile_statements) == 1
+    assert "EXISTS" in profile_statements[0]
+    assert target.status_code == 200
+    assert target.json() == {
+        "id": target_id, "username": "target_1", "display_name": "Target 1",
+        "followers_count": 2, "following_count": 0, "followed_by_actor": True,
+    }
+    assert set(target.json()) == {
+        "id", "username", "display_name", "followers_count", "following_count",
+        "followed_by_actor",
+    }
+    assert self_view.json()["id"] == actor_id
+    assert self_view.json()["followed_by_actor"] is False
+    assert missing.status_code == 404
 
 
 @pytest.mark.integration
