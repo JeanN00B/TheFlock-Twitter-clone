@@ -1,6 +1,7 @@
 """Application-seam tests for bounded public user search."""
 
 from dataclasses import FrozenInstanceError, fields
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,7 @@ from app.users.application.public_social_reads import (
 
 ADA_ID = UUID("550e8400-e29b-41d4-a716-446655440000")
 ACTOR_ID = UUID("550e8400-e29b-41d4-a716-446655440001")
+INSTANT = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
 
 
 class RecordingRepository:
@@ -31,6 +33,11 @@ class RecordingRepository:
     def profile(self, username: str, actor_id: UUID) -> object | None:
         self.profile_calls.append((username, actor_id))
         return self.profile_result
+
+    def relationships(self, scope, boundary, limit):
+        self.relationship_calls = getattr(self, "relationship_calls", [])
+        self.relationship_calls.append((scope, boundary, limit))
+        return getattr(self, "relationship_result", None)
 
 
 def test_search_trims_term_uses_fixed_limit_and_returns_public_identities() -> None:
@@ -106,3 +113,49 @@ def test_profile_self_view_preserves_repository_false_state() -> None:
     result = public_social_reads.GetPublicProfile(repository).execute("actor_1", ACTOR_ID)
 
     assert result.followed_by_actor is False
+
+
+def test_relationship_list_canonicalizes_scopes_and_uses_lookahead() -> None:
+    repository = RecordingRepository()
+    identities = tuple(PublicIdentity(UUID(int=index), f"user_{index}", f"User {index}") for index in range(1, 4))
+    boundaries = tuple(public_social_reads.RelationshipCursor(INSTANT, item.id) for item in identities)
+    repository.relationship_result = (identities, boundaries)
+
+    page = public_social_reads.ListPublicRelationships(repository).execute(
+        " ALICE_42 ", public_social_reads.RelationshipDirection.FOLLOWERS, 2, None
+    )
+
+    scope = public_social_reads.RelationshipScope(
+        public_social_reads.RelationshipDirection.FOLLOWERS, "alice_42"
+    )
+    assert repository.relationship_calls == [(scope, None, 3)]
+    assert page.items == identities[:2]
+    assert page.next_cursor == boundaries[1]
+    assert [field.name for field in fields(page)] == ["items", "next_cursor"]
+
+
+@pytest.mark.parametrize("page_size", [0, 51, "1", None])
+def test_relationship_list_rejects_invalid_page_size_before_repository(page_size) -> None:
+    repository = RecordingRepository()
+    with pytest.raises(public_social_reads.RelationshipValidationError) as captured:
+        public_social_reads.ListPublicRelationships(repository).execute(
+            "alice_42", public_social_reads.RelationshipDirection.FOLLOWING, page_size, None
+        )
+    assert captured.value.fields == {"page_size": "invalid"}
+    assert not hasattr(repository, "relationship_calls")
+
+
+def test_relationship_list_rejects_cross_scope_cursor_before_repository() -> None:
+    repository = RecordingRepository()
+    cursor = public_social_reads.ScopedRelationshipCursor(
+        public_social_reads.RelationshipScope(
+            public_social_reads.RelationshipDirection.FOLLOWERS, "bob_42"
+        ),
+        public_social_reads.RelationshipCursor(INSTANT, ADA_ID),
+    )
+    with pytest.raises(public_social_reads.RelationshipValidationError) as captured:
+        public_social_reads.ListPublicRelationships(repository).execute(
+            "alice_42", public_social_reads.RelationshipDirection.FOLLOWERS, 20, cursor
+        )
+    assert captured.value.fields == {"cursor": "invalid"}
+    assert not hasattr(repository, "relationship_calls")

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKeyConstraint, Identity, Index, PrimaryKeyConstraint, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKeyConstraint, Identity, Index, PrimaryKeyConstraint, desc, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,8 @@ class FollowRelationshipModel(Base):
         ForeignKeyConstraint(["follower_public_id"], ["users.public_id"], name="fk_follow_relationships_follower_users", ondelete="RESTRICT"),
         ForeignKeyConstraint(["followed_public_id"], ["users.public_id"], name="fk_follow_relationships_followed_users", ondelete="RESTRICT"),
         Index("ix_follow_relationships_followed_follower", "followed_public_id", "follower_public_id"),
+        Index("ix_follow_relationships_followed_created_at_follower_desc", "followed_public_id", desc("created_at"), desc("follower_public_id")),
+        Index("ix_follow_relationships_follower_created_at_followed_desc", "follower_public_id", desc("created_at"), desc("followed_public_id")),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity())

@@ -21,6 +21,8 @@ from app.users.application.public_social_reads import (
     ProfileValidationError,
     PublicIdentity,
     PublicProfile,
+    RelationshipDirection,
+    RelationshipPage,
     SearchValidationError,
 )
 from app.users.domain.user import PublicUser
@@ -55,6 +57,16 @@ class RecordingProfile:
         return self.result
 
 
+class RecordingRelationships:
+    def __init__(self) -> None:
+        self.calls = []
+        self.result = RelationshipPage((PublicIdentity(ACTOR_ID, "alice_42", "Alice"),), None)
+
+    def execute(self, username, direction, page_size, cursor):
+        self.calls.append((username, direction, page_size, cursor))
+        return self.result
+
+
 class RecordingUseCase:
     def __init__(self) -> None:
         self.commands = []
@@ -83,6 +95,7 @@ def client_for(
     authenticated: bool = True,
     search: RecordingSearch | None = None,
     profile: RecordingProfile | None = None,
+    relationships: RecordingRelationships | None = None,
 ) -> TestClient:
     app = FastAPI()
 
@@ -97,6 +110,7 @@ def client_for(
             current_user,
             search_provider=lambda: search or RecordingSearch(),
             profile_provider=lambda: profile or RecordingProfile(),
+            relationship_list_provider=lambda: relationships or RecordingRelationships(),
         )
     )
 
@@ -227,6 +241,33 @@ def test_profile_returns_exact_projection_and_maps_errors() -> None:
         "error": {"code": "validation_error", "fields": {"username": "invalid"}}
     }
     assert "private@example.com" not in response.text
+
+
+def test_relationship_routes_return_exact_envelope_and_parse_page_size() -> None:
+    relationships = RecordingRelationships()
+    with client_for(RecordingUseCase(), relationships=relationships) as client:
+        followers = client.get("/users/ALICE_42/followers?page_size=1")
+        following = client.get("/users/alice_42/following")
+        invalid = client.get("/users/alice_42/followers?page_size=1&page_size=2")
+    assert followers.json() == {"items": [{"id": str(ACTOR_ID), "username": "alice_42", "display_name": "Alice"}], "next_cursor": None}
+    assert following.status_code == 200
+    assert relationships.calls[:2] == [
+        ("ALICE_42", RelationshipDirection.FOLLOWERS, 1, None),
+        ("alice_42", RelationshipDirection.FOLLOWING, 20, None),
+    ]
+    assert invalid.status_code == 422
+    assert len(relationships.calls) == 2
+
+
+def test_relationship_routes_reject_noncanonical_page_size_before_list_io() -> None:
+    relationships = RecordingRelationships()
+    with client_for(RecordingUseCase(), relationships=relationships) as client:
+        responses = [client.get(
+            f"/users/alice_42/followers?page_size={value}"
+        ) for value in ("01", "%2B1", "%201")]
+    assert all(response.status_code == 422 for response in responses)
+    assert all(response.json()["error"]["fields"] == {"page_size": "invalid"} for response in responses)
+    assert relationships.calls == []
 
 
 def test_profile_authentication_precedes_target_resolution() -> None:
@@ -415,6 +456,45 @@ def test_composed_profile_is_one_statement_exact_and_viewer_relative(live_social
     assert self_view.json()["id"] == actor_id
     assert self_view.json()["followed_by_actor"] is False
     assert missing.status_code == 404
+
+
+@pytest.mark.integration
+def test_composed_relationship_lists_page_directions_and_isolate_cursors(live_social_runtime) -> None:
+    app, engine = live_social_runtime
+    with TestClient(app, raise_server_exceptions=False) as client:
+        _register_and_login(client, "target_1")
+        client.cookies.clear()
+        _register_and_login(client, "follower_1")
+        assert client.post("/users/target_1/follow").status_code == 200
+        client.cookies.clear()
+        _register_and_login(client, "follower_2")
+        assert client.post("/users/target_1/follow").status_code == 200
+        assert client.post("/users/follower_1/follow").status_code == 200
+
+        first = client.get("/users/target_1/followers?page_size=1")
+        cursor = first.json()["next_cursor"]
+        second = client.get(f"/users/target_1/followers?page_size=1&cursor={cursor}")
+        following = client.get("/users/follower_2/following")
+
+        from sqlalchemy import event
+        statements = []
+        def observe(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+        event.listen(engine, "before_cursor_execute", observe)
+        try:
+            wrong_direction = client.get(f"/users/target_1/following?cursor={cursor}")
+            wrong_target = client.get(f"/users/follower_1/followers?cursor={cursor}")
+        finally:
+            event.remove(engine, "before_cursor_execute", observe)
+
+    assert first.status_code == second.status_code == following.status_code == 200
+    assert [first.json()["items"][0]["username"], second.json()["items"][0]["username"]] == [
+        "follower_2", "follower_1"
+    ]
+    assert [item["username"] for item in following.json()["items"]] == ["follower_1", "target_1"]
+    assert all(set(item) == {"id", "username", "display_name"} for item in following.json()["items"])
+    assert wrong_direction.status_code == wrong_target.status_code == 422
+    assert not any("follow_relationships" in statement for statement in statements)
 
 
 @pytest.mark.integration
