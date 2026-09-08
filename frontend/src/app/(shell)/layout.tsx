@@ -3,7 +3,6 @@
 import { type ReactNode, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useApp } from "@/app/providers";
-import { Input } from "@/components/ui/input";
 import {
   SidebarInset,
   SidebarProvider,
@@ -55,16 +54,7 @@ export default function ShellLayout({ children }: { children: ReactNode }) {
         <ComposerProvider>
           <header className="flex items-center gap-2 border-b p-2">
             <SidebarTrigger />
-            <label htmlFor="shell-search" className="sr-only">
-              Search
-            </label>
-            <Input
-              id="shell-search"
-              type="search"
-              autoComplete="off"
-              placeholder="Search by exact username"
-              className="max-w-xs"
-            />
+            {/* <UserSearch /> */}
             <NewPostButton />
           </header>
           <div className="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>

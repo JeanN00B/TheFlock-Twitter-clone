@@ -116,6 +116,17 @@ function NavUser({ user }: { user: User }) {
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem
+                onClick={() => {
+                  router.push("/my-profile");
+                }}
+              >
+                <UserRound />
+                Profile
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem
                 disabled={pending}
                 onClick={() => {
                   void onLogout();

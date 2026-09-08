@@ -102,13 +102,13 @@ describe("home shell (P1 shell+gating)", () => {
     expect(screen.getByTestId("session")).toHaveTextContent("empty");
   });
 
-  it("offers a search affordance and an enabled New-post trigger", async () => {
+  it("offers no search affordance and an enabled New-post trigger", async () => {
     renderShell();
 
-    expect(screen.getByLabelText(/search/i)).toHaveAttribute(
-      "placeholder",
-      "Search by exact username",
-    );
+    // Search was removed: no backend search/lookup endpoint exists, so the
+    // shell ships no search slot at all (not even a dead input).
+    expect(screen.queryByRole("search")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/search/i)).not.toBeInTheDocument();
     const trigger = screen.getByRole("button", { name: /new post/i });
     expect(trigger).toBeEnabled();
     fireEvent.click(trigger);
@@ -158,6 +158,18 @@ describe("sidebar account menu + logout (Fix-3)", () => {
     const menu = screen.getByRole("menu");
     expect(menu).toHaveTextContent("Alice");
     expect(menu).toHaveTextContent("@alice");
+  });
+
+  it("account menu links to My profile (P3 3.2 unblocks the omission)", async () => {
+    await loginAsAlice();
+    renderShell();
+
+    await openAccountMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: /^profile$/i }),
+    );
+
+    expect(push).toHaveBeenCalledWith("/my-profile");
   });
 
   it("logout clears the session and navigates to /login", async () => {
