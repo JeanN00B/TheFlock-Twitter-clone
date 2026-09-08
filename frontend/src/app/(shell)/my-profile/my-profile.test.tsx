@@ -148,17 +148,33 @@ describe("my-profile (P3 3.2, corrective: header from session)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("my tweets list filters to own posts with an honest scoping note", async () => {
+  it("my tweets use the profile-scoped feed, not a client-filtered global list", async () => {
     await loginAsAlice();
     const gateway = createBackendGateway(BASE_URL);
     await gateway.createTweet({ text: "alice mine" });
     __seedTweet({ username: "bob", text: "bob foreign" });
     seedSessionMirror();
+
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        urls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
     renderMyProfile();
 
     expect(await screen.findByText("alice mine")).toBeInTheDocument();
     expect(screen.queryByText("bob foreign")).not.toBeInTheDocument();
-    expect(screen.getByText(/only your posts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/only your posts/i)).not.toBeInTheDocument();
+
+    const feedUrl = new URL(
+      urls.find((url) => url.includes("/tweets")) ?? "",
+    );
+    expect(feedUrl.searchParams.get("feed")).toBe("profile");
+    expect(feedUrl.searchParams.get("username")).toBe("alice");
   });
 
   it("dialog post from my-profile appears in my tweets (posted-token invalidation)", async () => {

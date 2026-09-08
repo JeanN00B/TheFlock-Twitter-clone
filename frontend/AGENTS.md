@@ -25,7 +25,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   routes `/login`; `POST /auth/logout`.
 - Tweets (S2): `/` owns the timeline and composer; the client blocks text
   over 280 characters, while the server remains authoritative with 422.
-  Feed rows expose like/unlike and open `/profile/[username]` on card click.
+  Feed rows expose like/unlike; the author alias opens `/profile/[username]`.
 - Social (S3): `/profile/[username]` owns follow/unfollow and updates the
   profile count; shell header owns user search (`GET /users/search`) and
   navigates to profiles — do not add follow affordances outside profile.

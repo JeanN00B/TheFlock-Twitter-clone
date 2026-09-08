@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { useSession } from "@/features/auth/session-store";
@@ -22,13 +22,14 @@ function initialsFor(displayName: string, username: string): string {
 }
 
 function MyProfileContent({ user }: { user: User }) {
-  const feed = useFeed();
+  // Same profile-scoped feed as /profile/[username]: server filters to this
+  // author, cursor paging + sentinel infinite scroll stay in shared FeedList.
+  const feed = useFeed({
+    scope: { kind: "profile", username: user.username },
+  });
   const { postedToken } = useComposer();
   const firstRender = useRef(true);
 
-  // Same token→reload invalidation as Home: dialog posts made while this
-  // page is open reload the list. The mount itself is skipped (useFeed
-  // already loads the first page).
   useEffect(() => {
     if (firstRender.current) {
       firstRender.current = false;
@@ -36,14 +37,6 @@ function MyProfileContent({ user }: { user: User }) {
     }
     feed.reload();
   }, [postedToken, feed.reload]);
-
-  // Client-side own-posts filter: the feed seam is global-only, so pages
-  // load newest-first across everyone and this view keeps the signed-in
-  // author's rows. `hasMore` / Load-more still page the global cursor —
-  // the scoping note below says so honestly.
-  const myTweets = useMemo(() => {
-    return feed.tweets.filter((tweet) => tweet.author.id === user.id);
-  }, [feed.tweets, user.id]);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 p-4 sm:p-6">
@@ -69,25 +62,16 @@ function MyProfileContent({ user }: { user: User }) {
         </CardContent>
       </Card>
       <section aria-label="My posts" className="flex flex-col gap-3">
-        <p className="text-sm text-muted-foreground">
-          Only your posts are listed below, taken from the feed pages loaded
-          so far — use Load more to surface older ones of yours.
-        </p>
-        <FeedList feed={{ ...feed, tweets: myTweets }} />
+        <FeedList feed={feed} />
       </section>
     </main>
   );
 }
 
 /**
- * P3 my-profile (self-only, corrective): the header is backend-true /me
- * identity only (displayName, @username, member-since from createdAt).
- * Email stays hidden (PII minimization — the port drops it at the adapter
- * boundary). No bio/avatar/counts/follow here: the backend has no
- * GET /profile/:username route, so this page never calls `profile()`;
- * the header and the tweets list are independent sections — a dead header
- * must never hide tweets again (see the regression test). Others'
- * /profile/[username] keeps its mocked shapes for P4.
+ * Self profile: header from `/auth/me` session identity; posts from the
+ * real profile-scoped tweet feed (`feed=profile&username=<me>`), matching
+ * public `/profile/[username]` list behavior.
  */
 export default function MyProfilePage() {
   const { session } = useSession();
