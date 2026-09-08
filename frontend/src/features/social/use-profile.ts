@@ -3,13 +3,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/app/providers";
-import type { ProfileView } from "@/lib/api/port";
+import { ApiError, type ProfileView } from "@/lib/api/port";
 
 /**
- * S3 profile slice: loads `GET /profile/:username` and applies
- * `POST /follow` results directly, so the button and the follower
- * count reflect the toggle immediately without a refetch.
- * Auth failures need no handling here — the fetch adapter clears the
+ * S3 profile slice: loads the FROZEN `GET /profile/:username` mock shape
+ * and toggles follow state on the REAL follow paths
+ * (POST/DELETE /users/{username}/follow) via `gateway.setFollow`.
+ * The toggle is optimistic — the button flips immediately and rolls back
+ * on failure — because the real follow response carries no counts: the
+ * ±1 applied here stands on success too. A 404 rolls back with a
+ * not-found toast and never ends the session (404 is not 401); auth
+ * failures need no handling here — the fetch adapter clears the
  * session and routes to /login centrally on any 401.
  */
 export function useProfile(username: string) {
@@ -43,23 +47,32 @@ export function useProfile(username: string) {
 
   const toggleFollow = useCallback(async (): Promise<void> => {
     if (profile === null || toggling) return;
+    const previous = profile;
+    const nextFollowing = !profile.following;
+    setProfile({
+      ...profile,
+      following: nextFollowing,
+      followersCount: Math.max(
+        0,
+        profile.followersCount + (nextFollowing ? 1 : -1),
+      ),
+    });
     setToggling(true);
     try {
       const next = await gateway.setFollow({
-        username: profile.user.username,
-        following: !profile.following,
+        username: previous.user.username,
+        following: nextFollowing,
       });
       setProfile((prev) =>
-        prev === null
-          ? prev
-          : {
-              ...prev,
-              following: next.following,
-              followersCount: next.followersCount,
-            },
+        prev === null ? prev : { ...prev, following: next.following },
       );
-    } catch {
-      toast.error("Couldn't update the follow. Please try again.");
+    } catch (error) {
+      setProfile(previous);
+      if (error instanceof ApiError && error.status === 404) {
+        toast.error("This user was not found.");
+      } else {
+        toast.error("Couldn't update the follow. Please try again.");
+      }
     } finally {
       setToggling(false);
     }

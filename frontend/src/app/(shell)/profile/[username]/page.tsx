@@ -3,6 +3,7 @@
 import { use } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
+import { useSession } from "@/features/auth/session-store";
 import { FollowButton } from "@/features/social/follow-button";
 import { useProfile } from "@/features/social/use-profile";
 
@@ -13,8 +14,14 @@ interface ProfilePageProps {
 /** Thin inbound adapter: composes the profile hook + follow button, no logic. */
 export default function ProfilePage({ params }: ProfilePageProps) {
   const { username } = use(params);
+  const { session } = useSession();
   const { profile, loading, error, toggling, toggleFollow } =
     useProfile(username);
+  // Follow is others-only: never offer it on your own profile (the
+  // backend 422s self-follow; the button must not invite it).
+  const isSelf =
+    session !== null &&
+    session.user.username.toLowerCase() === username.toLowerCase();
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 p-4 sm:p-6">
@@ -57,11 +64,13 @@ export default function ProfilePage({ params }: ProfilePageProps) {
                 {`${profile.followersCount} ${profile.followersCount === 1 ? "follower" : "followers"} · ${profile.followingCount} following`}
               </p>
             </div>
-            <FollowButton
-              following={profile.following}
-              pending={toggling}
-              onToggle={toggleFollow}
-            />
+            {isSelf ? null : (
+              <FollowButton
+                following={profile.following}
+                pending={toggling}
+                onToggle={toggleFollow}
+              />
+            )}
           </CardContent>
         </Card>
       ) : null}

@@ -80,11 +80,10 @@ export interface ToggleFollowInput {
   following: boolean;
 }
 
-/** S3 result of a follow-state change. */
+/** S3 result of a follow-state change: exactly the backend envelope. */
 export interface FollowState {
   username: string;
   following: boolean;
-  followersCount: number;
 }
 
 /** S3 profile view over the cookie session. */
@@ -160,14 +159,20 @@ export interface BackendGateway {
    */
   deleteTweet(id: string): Promise<void>;
   /**
-   * GET /profile/:username — reads a profile over the cookie session.
-   * Rejects ApiError(401) when logged out.
+   * GET /profile/:username — FROZEN proposal contract (MSW-only). The
+   * backend ships no profile read; this shape ({user,following,
+   * followersCount,followingCount}) documents the envelope the backend
+   * should implement. Rejects ApiError(401) when logged out.
    */
   profile(username: string): Promise<ProfileView>;
   /**
-   * POST /follow — sets follow state over the cookie session.
-   * Rejects ApiError(401) when logged out, ApiError(422) when the
-   * server refuses the change (unknown shape, self-follow).
+   * Follow-state change over the cookie session: POST
+   * /users/{username}/follow to follow, DELETE /users/{username}/follow
+   * to unfollow (intent rides the method; no request body). Both answer
+   * 200 with exactly {username,following} — counts never come back here,
+   * so callers keep their optimistic counts. Rejects ApiError(401) when
+   * logged out, ApiError(404) not_found for an unknown user, ApiError(422)
+   * validation_error for a refused change (self-follow).
    */
   setFollow(input: ToggleFollowInput): Promise<FollowState>;
 }

@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { act, Suspense } from "react";
+import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfilePage from "@/app/(shell)/profile/[username]/page";
 import { AppProviders } from "@/app/providers";
@@ -17,6 +18,7 @@ import {
   __resetFollows,
   __resetTweets,
 } from "@/mocks/handlers";
+import { server } from "@/mocks/server";
 
 const BASE_URL = "http://localhost:8000";
 
@@ -55,6 +57,33 @@ async function loginAsAlice() {
     email: "alice@example.com",
     password: "password123",
   });
+}
+
+function seedSessionMirror() {
+  sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ user: alice }));
+}
+
+function spyOnFetch() {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const realFetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (input: Parameters<typeof fetch>[0], init) => {
+      calls.push({ url: String(input), init });
+      return realFetch(input, init);
+    },
+  );
+  return calls;
+}
+
+function realFollowPosts(
+  calls: Array<{ url: string; init?: RequestInit }>,
+  username: string,
+) {
+  return calls.filter(
+    (call) =>
+      new URL(call.url).pathname === `/users/${username}/follow` &&
+      call.init?.method === "POST",
+  );
 }
 
 beforeEach(() => {
@@ -159,5 +188,86 @@ describe("social seam (S3)", () => {
     expect(urls.some((url) => url.includes("/search"))).toBe(false);
     expect(screen.queryByRole("searchbox")).toBeNull();
     expect(screen.queryByRole("link", { name: /search/i })).toBeNull();
+  });
+
+  it("toggle is optimistic: Following + pending show before the response resolves", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post("*/users/bob/follow", async () => {
+        await gate;
+        return HttpResponse.json({ username: "bob", following: true });
+      }),
+    );
+    await loginAsAlice();
+    const calls = spyOnFetch();
+    await renderProfile("bob");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Follow" }));
+
+    // The real path is hit once, and the UI flips while gated.
+    expect(realFollowPosts(calls, "bob")).toHaveLength(1);
+    expect(
+      await screen.findByRole("button", { name: /saving/i }),
+    ).toBeDisabled();
+    expect(screen.getByText(/1 follower/)).toBeInTheDocument();
+
+    release();
+    expect(
+      await screen.findByRole("button", { name: "Following" }),
+    ).toBeInTheDocument();
+    // The real response carries no counts: the optimistic count stands.
+    expect(screen.getByText(/1 follower/)).toBeInTheDocument();
+  });
+
+  it("failed toggle rolls back to Follow with a retry toast and no /login", async () => {
+    server.use(
+      http.post("*/users/bob/follow", () =>
+        HttpResponse.json({ error: { code: "internal" } }, { status: 500 }),
+      ),
+    );
+    await loginAsAlice();
+    const calls = spyOnFetch();
+    await renderProfile("bob");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Follow" }));
+
+    expect(realFollowPosts(calls, "bob")).toHaveLength(1);
+    expect(
+      await screen.findByText("Couldn't update the follow. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Follow" })).toBeInTheDocument();
+    expect(screen.getByText(/0 followers/)).toBeInTheDocument();
+    expect(push).not.toHaveBeenCalledWith("/login");
+  });
+
+  it("follow on an unknown user rolls back with a not-found toast and keeps the session", async () => {
+    await loginAsAlice();
+    const calls = spyOnFetch();
+    await renderProfile("ghost-nobody");
+
+    // The frozen profile stand-in still renders; only the follow is real.
+    expect(await screen.findByText("@ghost-nobody")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Follow" }));
+
+    expect(realFollowPosts(calls, "ghost-nobody")).toHaveLength(1);
+    expect(
+      await screen.findByText("This user was not found."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Follow" })).toBeInTheDocument();
+    // 404 is not 401: no central session end, no /login push.
+    expect(push).not.toHaveBeenCalledWith("/login");
+  });
+
+  it("own profile shows no Follow button (others-only)", async () => {
+    await loginAsAlice();
+    seedSessionMirror();
+    await renderProfile("alice");
+
+    expect(await screen.findByText("@alice")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^follow$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^following$/i })).toBeNull();
   });
 });

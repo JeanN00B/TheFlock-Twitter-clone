@@ -171,17 +171,17 @@ function mapUser(raw: unknown): User {
 
 /**
  * Backend-to-port mapping for follow-state changes, isolated here.
- * Rejects anything that is not a well-formed FollowState.
+ * Accepts exactly the real wire shape ({username,following}) — the
+ * backend forbids extras, so anything else is drift and rejects 500.
  */
 function mapFollowState(raw: unknown): FollowState {
   if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { username?: unknown }).username === "string" &&
-    typeof (raw as { following?: unknown }).following === "boolean" &&
-    typeof (raw as { followersCount?: unknown }).followersCount === "number"
+    isRecord(raw) &&
+    Object.keys(raw).length === 2 &&
+    typeof raw.username === "string" &&
+    typeof raw.following === "boolean"
   ) {
-    return raw as FollowState;
+    return { username: raw.username, following: raw.following };
   }
   throw new ApiError(500, "Unexpected follow shape");
 }
@@ -341,10 +341,17 @@ export function createBackendGateway(
       );
       return mapProfile(raw);
     },
+    /**
+     * Follow-state change on the real paths: POST to follow, DELETE to
+     * unfollow /users/{username}/follow. Intent rides the method, so no
+     * body is sent. 404/422 reject with their backend codes for the
+     * caller to map to friendly copy — neither ends the session (only
+     * 401 does, centrally in request()).
+     */
     async setFollow(input: ToggleFollowInput): Promise<FollowState> {
-      const raw = await request<unknown>("/follow", {
-        method: "POST",
-        body: JSON.stringify(input),
+      const path = `/users/${encodeURIComponent(input.username)}/follow`;
+      const raw = await request<unknown>(path, {
+        method: input.following ? "POST" : "DELETE",
       });
       return mapFollowState(raw);
     },

@@ -35,6 +35,22 @@ const accounts = new Map<string, Account>([
       password: "password123",
     },
   ],
+  // Second known account so a followable non-self user exists, mirroring
+  // backend existence semantics (unknown usernames 404 on follow paths).
+  [
+    "bob",
+    {
+      id: "u-bob",
+      username: "bob",
+      displayName: "Bob",
+      createdAt: IDENTITY_CREATED_AT,
+      updatedAt: IDENTITY_CREATED_AT,
+      email: "bob@example.com",
+      bio: null,
+      avatarUrl: null,
+      password: "password123",
+    },
+  ],
 ]);
 
 interface RegistrationAccount {
@@ -290,6 +306,41 @@ function requireSession() {
     };
   }
   return { username, response: null };
+}
+
+/**
+ * Shared follow-transition guard for the real follow mirror below.
+ * Returns the known account to mutate, or the backend-exact error
+ * descriptor (unknown → 404 not_found; self-follow → 422
+ * validation_error {username:self_follow}).
+ */
+function followGate(
+  sessionUser: string,
+  target: string,
+):
+  | { ok: true; account: Account }
+  | { ok: false; status: number; body: Record<string, unknown> } {
+  const account = accounts.get(target.toLowerCase());
+  if (account === undefined) {
+    return {
+      ok: false,
+      status: 404,
+      body: { error: { code: "not_found" } },
+    };
+  }
+  if (account.username.toLowerCase() === sessionUser.toLowerCase()) {
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        error: {
+          code: "validation_error",
+          fields: { username: "self_follow" },
+        },
+      },
+    };
+  }
+  return { ok: true, account };
 }
 
 /** S1: login/logout. Registration remains explicitly signed out. */
@@ -565,6 +616,13 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 });
   }),
 
+  /**
+   * FROZEN profile read (proposal contract, MSW-only): the backend ships
+   * no GET /profile/:username, so this shape ({user,following,
+   * followersCount,followingCount}, synthetic stand-in for any non-empty
+   * username) documents the envelope the backend should implement. Only
+   * the follow paths above are real — keep this handler byte-stable.
+   */
   http.get("*/profile/:username", ({ params }) => {
     const { username: sessionUser, response } = requireSession();
     if (response !== null) return response;
@@ -582,42 +640,51 @@ export const handlers = [
     });
   }),
 
-  http.post("*/follow", async ({ request }) => {
+  /**
+   * Real follow mirror: POST/DELETE /users/:username/follow, backend-exact.
+   * Success is exactly {username,following} (counts never come back on
+   * this route — the frontend keeps optimistic counts). Unknown targets
+   * 404 {error:{code:not_found}}; self-follow 422s
+   * {error:{code:validation_error},fields:{username:self_follow}} while
+   * self-unfollow stays a 200 no-op echoing the actor — all mirroring the
+   * backend follow use case. The guessed POST /follow is gone: the
+   * adapter never calls it, and MSW fails unhandled requests loudly.
+   */
+  http.post("*/users/:username/follow", ({ params }) => {
     const { username: sessionUser, response } = requireSession();
     if (response !== null) return response;
     if (sessionUser === null) throw new Error("unreachable");
-    const body = (await request.json()) as {
-      username?: unknown;
-      following?: unknown;
-    };
-    if (
-      typeof body.username !== "string" ||
-      body.username.trim() === "" ||
-      typeof body.following !== "boolean"
-    ) {
-      return HttpResponse.json(
-        { detail: "username and following are required" },
-        { status: 422 },
-      );
-    }
-    const target = body.username;
-    if (target.toLowerCase() === sessionUser.toLowerCase()) {
-      return HttpResponse.json(
-        { detail: "Cannot follow yourself" },
-        { status: 422 },
-      );
-    }
+    const target = String(params.username ?? "");
+    const gate = followGate(sessionUser, target);
+    // Unknown target (404) or self-follow (422) — same as the backend.
+    if (!gate.ok) return HttpResponse.json(gate.body, { status: gate.status });
     let followees = follows.get(sessionUser);
     if (followees === undefined) {
       followees = new Set<string>();
       follows.set(sessionUser, followees);
     }
-    if (body.following) followees.add(target);
-    else followees.delete(target);
+    followees.add(gate.account.username);
     return HttpResponse.json({
-      username: target,
-      following: followees.has(target),
-      followersCount: followersOf(target),
+      username: gate.account.username,
+      following: true,
+    });
+  }),
+
+  http.delete("*/users/:username/follow", ({ params }) => {
+    const { username: sessionUser, response } = requireSession();
+    if (response !== null) return response;
+    if (sessionUser === null) throw new Error("unreachable");
+    const target = String(params.username ?? "");
+    if (target.toLowerCase() === sessionUser.toLowerCase()) {
+      // Backend parity: self-unfollow is a 200 no-op echoing the actor.
+      return HttpResponse.json({ username: sessionUser, following: false });
+    }
+    const gate = followGate(sessionUser, target);
+    if (!gate.ok) return HttpResponse.json(gate.body, { status: gate.status });
+    follows.get(sessionUser)?.delete(gate.account.username);
+    return HttpResponse.json({
+      username: gate.account.username,
+      following: false,
     });
   }),
 ];
