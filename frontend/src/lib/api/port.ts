@@ -68,6 +68,7 @@ export interface FeedPage {
 
 export type FeedScope =
   | { kind: "all" }
+  | { kind: "following" }
   | { kind: "profile"; username: string };
 
 export interface FeedInput {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetAuthStandIn,
+  __resetFollows,
   __resetTweets,
   __seedTweet,
 } from "@/mocks/handlers";
@@ -12,6 +13,7 @@ const BASE_URL = "http://localhost:8000";
 beforeEach(() => {
   __resetAuthStandIn();
   __resetTweets();
+  __resetFollows();
 });
 
 afterEach(() => {
@@ -180,6 +182,52 @@ describe("BackendGateway feed seam (P2)", () => {
     expect(url.searchParams.has("username")).toBe(false);
   });
 
+  it("serializes following scope and returns only followed authors", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    await gateway.createTweet({ text: "alice own" });
+    __seedTweet({ username: "bob", text: "bob older" });
+    __seedTweet({ username: "bob", text: "bob newer" });
+    __seedTweet({ username: "carol", text: "carol row" });
+    await gateway.setFollow({ username: "bob", following: true });
+
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        seen.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    const first = await gateway.feed({
+      scope: { kind: "following" },
+      pageSize: 1,
+    });
+    expect(first.items.map((tweet) => tweet.text)).toEqual(["bob newer"]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const second = await gateway.feed({
+      scope: { kind: "following" },
+      pageSize: 1,
+      cursor: first.nextCursor!,
+    });
+    expect(second.items.map((tweet) => tweet.text)).toEqual(["bob older"]);
+    expect(second.nextCursor).toBeNull();
+
+    const tweetUrls = seen.filter((url) => url.includes("/tweets?"));
+    expect(tweetUrls).toHaveLength(2);
+    for (const [index, value] of tweetUrls.entries()) {
+      const url = new URL(value);
+      expect(url.searchParams.get("feed")).toBe("following");
+      expect(url.searchParams.has("username")).toBe(false);
+      expect(url.searchParams.get("page_size")).toBe("1");
+      if (index === 0) expect(url.searchParams.has("cursor")).toBe(false);
+      else expect(url.searchParams.has("cursor")).toBe(true);
+    }
+  });
+
   it("rejects a cursor from another feed scope", async () => {
     const gateway = createBackendGateway(BASE_URL);
     await loginAsAlice();
@@ -215,6 +263,23 @@ describe("BackendGateway feed seam (P2)", () => {
       code: "validation_error",
       fields: { cursor: "invalid" },
     });
+
+    await gateway.setFollow({ username: "bob", following: true });
+    const following = await gateway.feed({
+      scope: { kind: "following" },
+      pageSize: 1,
+    });
+    await expect(
+      gateway.feed({
+        scope: { kind: "all" },
+        pageSize: 1,
+        cursor: following.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+      fields: { cursor: "invalid" },
+    });
   });
 
   it("rejects missing or duplicate scope query parameters", async () => {
@@ -227,6 +292,7 @@ describe("BackendGateway feed seam (P2)", () => {
       ["/tweets?feed=profile&username=bob&username=bob", { username: "invalid" }],
       ["/tweets?feed=profile&feed=profile&username=bob", { feed: "invalid" }],
       ["/tweets?feed=profile&username=ab", { username: "invalid" }],
+      ["/tweets?feed=following&username=bob", { username: "invalid" }],
     ] as const;
 
     for (const [path, fields] of cases) {

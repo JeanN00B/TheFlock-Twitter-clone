@@ -6,6 +6,7 @@ import { AppProviders } from "@/app/providers";
 import { createBackendGateway } from "@/lib/api/fetch-client";
 import {
   __resetAuthStandIn,
+  __resetFollows,
   __resetTweets,
   __seedTweet,
 } from "@/mocks/handlers";
@@ -78,6 +79,7 @@ beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
   __resetAuthStandIn();
   __resetTweets();
+  __resetFollows();
 });
 
 describe("useFeed (P2)", () => {
@@ -327,6 +329,58 @@ describe("useFeed (P2)", () => {
     expect(failed.search).toBe(retried.search);
     expect(retried.searchParams.get("feed")).toBe("profile");
     expect(retried.searchParams.get("username")).toBe("bob");
+  });
+
+  it("retains following scope across sentinel paging", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "bob-1" });
+    __seedTweet({ username: "bob", text: "bob-2" });
+    __seedTweet({ username: "bob", text: "bob-3" });
+    __seedTweet({ username: "carol", text: "carol noise" });
+    await gateway.setFollow({ username: "bob", following: true });
+
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        calls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    const { result } = renderHook(
+      () => useFeed({ pageSize: 2, scope: { kind: "following" } }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "bob-3",
+      "bob-2",
+    ]);
+    expect(result.current.hasMore).toBe(true);
+
+    const sentinel = document.createElement("div");
+    act(() => {
+      result.current.sentinelRef(sentinel);
+    });
+    fireIntersecting();
+    await waitFor(() =>
+      expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+        "bob-3",
+        "bob-2",
+        "bob-1",
+      ]),
+    );
+    expect(result.current.hasMore).toBe(false);
+
+    const pageCalls = calls.filter((url) => url.includes("/tweets"));
+    expect(pageCalls.length).toBeGreaterThanOrEqual(2);
+    for (const value of pageCalls) {
+      const url = new URL(value);
+      expect(url.searchParams.get("feed")).toBe("following");
+      expect(url.searchParams.has("username")).toBe(false);
+    }
   });
 
   it("resets scope state and discards a late response from the old profile", async () => {

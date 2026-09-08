@@ -6,7 +6,7 @@ import { AppProviders } from "@/app/providers";
 import { SESSION_STORAGE_KEY, useSession } from "@/features/auth/session-store";
 import { createBackendGateway } from "@/lib/api/fetch-client";
 import type { User } from "@/lib/api/port";
-import { __resetAuthStandIn } from "@/mocks/handlers";
+import { __resetAuthStandIn, __resetFollows, __seedTweet } from "@/mocks/handlers";
 import { server } from "@/mocks/server";
 import FeedPage from "./feed/page";
 import ShellLayout from "./layout";
@@ -60,6 +60,7 @@ beforeEach(() => {
   push.mockClear();
   sessionStorage.clear();
   __resetAuthStandIn();
+  __resetFollows();
 });
 
 describe("home shell (P1 shell+gating)", () => {
@@ -128,15 +129,45 @@ describe("home shell (P1 shell+gating)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("/feed renders the deferred notice with zero tweet rows", () => {
+  it("/feed renders following-scoped posts, not the global list", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    await gateway.createTweet({ text: "alice own" });
+    __seedTweet({ username: "bob", text: "bob followed post" });
+    __seedTweet({ username: "carol", text: "carol unrelated" });
+    await gateway.setFollow({ username: "bob", following: true });
+    sessionStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ user: alice }),
+    );
+
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        urls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
     render(
       <AppProviders>
-        <FeedPage />
+        <ShellLayout>
+          <FeedPage />
+        </ShellLayout>
       </AppProviders>,
     );
 
-    expect(screen.getByText(/deferred/i)).toBeInTheDocument();
-    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(await screen.findByText("bob followed post")).toBeInTheDocument();
+    expect(screen.queryByText("alice own")).not.toBeInTheDocument();
+    expect(screen.queryByText("carol unrelated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/deferred/i)).not.toBeInTheDocument();
+
+    const feedUrl = new URL(
+      urls.find((url) => url.includes("/tweets")) ?? "",
+    );
+    expect(feedUrl.searchParams.get("feed")).toBe("following");
+    expect(feedUrl.searchParams.has("username")).toBe(false);
   });
 });
 

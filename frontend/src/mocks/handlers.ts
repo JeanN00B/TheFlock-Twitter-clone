@@ -223,7 +223,7 @@ export function __seedTweet(input: {
   return row;
 }
 
-type MockFeedScopeKey = "all" | `profile:${string}`;
+type MockFeedScopeKey = "all" | "following" | `profile:${string}`;
 
 interface DecodedMockCursor {
   offset: number;
@@ -253,7 +253,11 @@ function decodeMockCursor(value: string): DecodedMockCursor | null {
       return null;
     }
     const scope = (parsed as { s: string }).s;
-    if (scope !== "all" && !/^profile:[a-z0-9_]{3,15}$/.test(scope)) {
+    if (
+      scope !== "all" &&
+      scope !== "following" &&
+      !/^profile:[a-z0-9_]{3,15}$/.test(scope)
+    ) {
       return null;
     }
     return {
@@ -505,8 +509,9 @@ export const handlers = [
 
   // Real cursor feed mirror: GET /tweets?page_size&cursor newest-first.
   http.get("*/tweets", ({ request }) => {
-    const { response } = requireSession();
+    const { username, response } = requireSession();
     if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
     const url = new URL(request.url);
     const feedValues = url.searchParams.getAll("feed");
     const usernameValues = url.searchParams.getAll("username");
@@ -519,14 +524,24 @@ export const handlers = [
 
     const feed = feedValues[0];
     let profileUsername: string | undefined;
+    let followingOnly = false;
     let scope: MockFeedScopeKey = "all";
-    if (feed === undefined) {
+    if (feed === undefined || feed === "all") {
       if (usernameValues.length > 0) {
         return HttpResponse.json(
           { error: { code: "validation_error", fields: { username: "invalid" } } },
           { status: 422 },
         );
       }
+    } else if (feed === "following") {
+      if (usernameValues.length > 0) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      followingOnly = true;
+      scope = "following";
     } else if (feed !== "profile") {
       return HttpResponse.json(
         { error: { code: "validation_error", fields: { feed: "invalid" } } },
@@ -602,13 +617,21 @@ export const handlers = [
       }
       offset = decoded.offset;
     }
-    const scopedRows =
-      profileUsername === undefined
-        ? tweetRows
-        : tweetRows.filter(
-            (row) =>
-              row.author.username.toLowerCase() === profileUsername?.toLowerCase(),
-          );
+    const scopedRows = (() => {
+      if (profileUsername !== undefined) {
+        return tweetRows.filter(
+          (row) =>
+            row.author.username.toLowerCase() === profileUsername.toLowerCase(),
+        );
+      }
+      if (followingOnly) {
+        const followees = follows.get(username) ?? new Set<string>();
+        return tweetRows.filter((row) =>
+          followees.has(row.author.username.toLowerCase()),
+        );
+      }
+      return tweetRows;
+    })();
     const items = scopedRows.slice(offset, offset + pageSize);
     const nextOffset = offset + pageSize;
     return HttpResponse.json({

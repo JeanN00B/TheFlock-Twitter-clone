@@ -41,7 +41,7 @@ function deleteCopy(status: number): string {
 
 function makeFeedInput(
   pageSize: number | undefined,
-  scopeKind: "all" | "profile",
+  scopeKind: "all" | "following" | "profile",
   scopeUsername: string | undefined,
   cursor?: string,
 ): FeedInput | undefined {
@@ -57,14 +57,17 @@ function makeFeedInput(
   if (cursor !== undefined) input.cursor = cursor;
   if (scopeKind === "profile" && scopeUsername !== undefined) {
     input.scope = { kind: "profile", username: scopeUsername };
+  } else if (scopeKind === "following") {
+    input.scope = { kind: "following" };
   }
   return input;
 }
 
 /**
- * P2 shared feed hook (deep module): owns cursor paging, the
+ * Shared feed hook (deep module): owns cursor paging, the
  * single-flight guard, and the sentinel observer. Home renders through
- * this; my-profile reuses it with an author filter on the loaded rows.
+ * this; my-profile reuses it with an author filter on the loaded rows;
+ * /feed binds following scope; public profiles bind profile scope.
  * New posts arrive via the global composer Dialog's posted-token reload —
  * this hook owns no post path. Auth failures need no handling here — the
  * fetch adapter clears the session and routes to /login centrally on
@@ -73,12 +76,20 @@ function makeFeedInput(
 export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   const { gateway } = useApp();
   const pageSize = options.pageSize;
-  const profileScope =
-    options.scope?.kind === "profile" ? options.scope : undefined;
-  const scopeKind = profileScope === undefined ? "all" : "profile";
-  const scopeUsername = profileScope?.username;
+  const scopeKind =
+    options.scope?.kind === "profile"
+      ? "profile"
+      : options.scope?.kind === "following"
+        ? "following"
+        : "all";
+  const scopeUsername =
+    options.scope?.kind === "profile" ? options.scope.username : undefined;
   const scopeKey =
-    scopeKind === "profile" ? `profile:${scopeUsername}` : "all";
+    scopeKind === "profile"
+      ? `profile:${scopeUsername}`
+      : scopeKind === "following"
+        ? "following"
+        : "all";
   const requestInput = useCallback(
     (cursor?: string) =>
       makeFeedInput(pageSize, scopeKind, scopeUsername, cursor),
