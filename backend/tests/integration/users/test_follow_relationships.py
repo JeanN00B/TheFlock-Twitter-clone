@@ -3,6 +3,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -162,6 +163,38 @@ def test_concurrent_same_verb_requests_converge(engine) -> None:
     assert results == [FollowState("bob_42", False), FollowState("bob_42", False)]
     with Session(engine) as session:
         assert session.execute(select(func.count()).select_from(FollowRelationshipModel)).scalar_one() == 0
+
+
+def test_concurrent_opposing_requests_complete_as_a_serial_order(engine) -> None:
+    with Session(engine) as session:
+        actor = add_user(session, "alice_42")
+        add_user(session, "bob_42")
+
+    ready = Barrier(2)
+
+    def set_state(following: bool) -> FollowState:
+        with Session(engine) as session:
+            ready.wait()
+            result = SQLAlchemyFollowRelationshipRepository(session).set_state(
+                actor.public_id, "bob_42", following, INSTANT
+            )
+            assert result is not None
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        follow = pool.submit(set_state, True)
+        unfollow = pool.submit(set_state, False)
+        results = {follow.result(), unfollow.result()}
+
+    assert results == {
+        FollowState("bob_42", True),
+        FollowState("bob_42", False),
+    }
+    with Session(engine) as session:
+        relationship_count = session.execute(
+            select(func.count()).select_from(FollowRelationshipModel)
+        ).scalar_one()
+    assert relationship_count in {0, 1}
 
 
 def test_migration_downgrade_reupgrade_preserves_archived_objects(engine) -> None:
