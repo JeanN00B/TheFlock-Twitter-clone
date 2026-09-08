@@ -55,14 +55,74 @@ describe("BackendGateway auth seam (S1)", () => {
     expect(__getAuthStandIn()).toBeNull();
   });
 
-  it("any 401 ends the session centrally (clear + /login wiring)", async () => {
+  it("login 401 never ends the session centrally (the form owns the error)", async () => {
     const onSessionEnd = vi.fn();
     const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
 
     await expect(
       gateway.login({ email: "alice@example.com", password: "wrong" }),
-    ).rejects.toBeInstanceOf(ApiError);
+    ).rejects.toMatchObject({ status: 401, code: "invalid_credentials" });
+    expect(onSessionEnd).not.toHaveBeenCalled();
+  });
+
+  it("non-login 401 still ends the session centrally (clear + /login wiring)", async () => {
+    const onSessionEnd = vi.fn();
+    const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
+
+    await expect(gateway.feed()).rejects.toBeInstanceOf(ApiError);
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  describe("BackendGateway me seam", () => {
+    it("me maps the backend snake_case user incl. display_name, never Authorization", async () => {
+      const seen: Array<{ url: string; init?: RequestInit }> = [];
+      const realFetch = globalThis.fetch;
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async (input: Parameters<typeof fetch>[0], init) => {
+          seen.push({ url: String(input), init });
+          return realFetch(input, init);
+        },
+      );
+      const gateway = createBackendGateway(BASE_URL);
+
+      await gateway.login({
+        email: "alice@example.com",
+        password: "password123",
+      });
+      const user = await gateway.me();
+
+      // Backend truth is snake_case with email and no bio/avatar keys;
+      // the adapter maps to camel, nulls the absent profile fields, and
+      // drops email at the boundary (PII minimization — see port.ts).
+      expect(user).toEqual({
+        id: "u-alice",
+        username: "alice",
+        displayName: "Alice",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        updatedAt: "2024-01-01T00:00:00.000Z",
+        bio: null,
+        avatarUrl: null,
+      });
+      const meCalls = seen.filter(
+        (call) => call.url.includes("/auth/me") && call.init?.method === "GET",
+      );
+      expect(meCalls).toHaveLength(1);
+      expect(meCalls[0]?.init?.credentials).toBe("include");
+      expect(
+        new Headers(meCalls[0]?.init?.headers).get("authorization"),
+      ).toBeNull();
+    });
+
+    it("me 401 rejects unauthenticated with code and keeps central session-end", async () => {
+      const onSessionEnd = vi.fn();
+      const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
+
+      await expect(gateway.me()).rejects.toMatchObject({
+        status: 401,
+        code: "unauthenticated",
+      });
+      expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("sends only the contract fields, stripping unknown keys", async () => {

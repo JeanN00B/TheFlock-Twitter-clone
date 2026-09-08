@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import type { Tweet, User } from "@/lib/api/port";
+import type { User } from "@/lib/api/port";
 
 /**
  * PROVISIONAL cookie-session stand-in (mock-first, MSW only).
@@ -8,8 +8,8 @@ import type { Tweet, User } from "@/lib/api/port";
  * MSW emulates the cookie with an in-memory stand-in plus a `Set-Cookie`
  * header on the mocked response. Swap stays mechanical: point
  * NEXT_PUBLIC_API_URL at the real backend and delete this file's usages.
- * There is intentionally NO `GET /auth/me` handler — a 401 on any
- * request IS the guard (session clears and the app routes to /login).
+ * GET /auth/me mirrors the backend identity read over the cookie
+ * stand-in below (logged out → 401 {error:{code:unauthenticated}}).
  */
 const SESSION_COOKIE = "flock_session";
 
@@ -18,14 +18,35 @@ interface Account extends User {
   password: string;
 }
 
+const IDENTITY_CREATED_AT = "2024-01-01T00:00:00.000Z";
+
 const accounts = new Map<string, Account>([
   [
     "alice",
     {
       id: "u-alice",
       username: "alice",
+      displayName: "Alice",
+      createdAt: IDENTITY_CREATED_AT,
+      updatedAt: IDENTITY_CREATED_AT,
       email: "alice@example.com",
       bio: "Test user",
+      avatarUrl: null,
+      password: "password123",
+    },
+  ],
+  // Second known account so a followable non-self user exists, mirroring
+  // backend existence semantics (unknown usernames 404 on follow paths).
+  [
+    "bob",
+    {
+      id: "u-bob",
+      username: "bob",
+      displayName: "Bob",
+      createdAt: IDENTITY_CREATED_AT,
+      updatedAt: IDENTITY_CREATED_AT,
+      email: "bob@example.com",
+      bio: null,
       avatarUrl: null,
       password: "password123",
     },
@@ -152,21 +173,119 @@ function publicUser(account: Account): User {
   return {
     id: account.id,
     username: account.username,
+    displayName: account.displayName,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
     bio: account.bio,
     avatarUrl: account.avatarUrl,
   };
 }
 
-/** S2: in-memory tweets. Reset per test; login stand-in above untouched. */
-const TWEET_MAX_LENGTH = 280;
-const tweets: Tweet[] = [];
-let tweetSeq = 0;
-
-/** Test-only reset for the S2 tweet store. */
-export function __resetTweets(): void {
-  tweets.length = 0;
-  tweetSeq = 0;
+/**
+ * Backend tweet row in the real nested-snake wire shape. Like fields are
+ * projected per-request from the likes store (actor-relative).
+ */
+interface MockTweetRow {
+  id: string;
+  text: string;
+  created_at: string;
+  author: { id: string; username: string; display_name: string };
 }
+
+const TWEET_MAX_LENGTH = 280;
+const tweetRows: MockTweetRow[] = [];
+/** tweet id → usernames who liked it */
+const tweetLikes = new Map<string, Set<string>>();
+
+/** Test-only reset for the tweet store. */
+export function __resetTweets(): void {
+  tweetRows.length = 0;
+  tweetLikes.clear();
+}
+
+function projectTweet(
+  row: MockTweetRow,
+  sessionUsername: string | null,
+): MockTweetRow & { like_count: number; liked_by_actor: boolean } {
+  const likers = tweetLikes.get(row.id) ?? new Set<string>();
+  return {
+    ...row,
+    like_count: likers.size,
+    liked_by_actor:
+      sessionUsername !== null ? likers.has(sessionUsername) : false,
+  };
+}
+
+/**
+ * Test-only seed for foreign-authored rows (delete-forbidden branches).
+ * Bypasses POST so the row can belong to anyone.
+ */
+export function __seedTweet(input: {
+  username: string;
+  text?: string;
+}): MockTweetRow {
+  const row: MockTweetRow = {
+    id: crypto.randomUUID(),
+    text: input.text ?? "foreign post",
+    created_at: new Date().toISOString(),
+    author: {
+      id: `u-${input.username.toLowerCase()}`,
+      username: input.username,
+      display_name: input.username,
+    },
+  };
+  tweetRows.unshift(row);
+  return row;
+}
+
+type MockFeedScopeKey = "all" | "following" | `profile:${string}`;
+
+interface DecodedMockCursor {
+  offset: number;
+  scope: MockFeedScopeKey;
+}
+
+/** Backend cursor transport mirror: opaque base64url offset plus scope. */
+function encodeMockCursor(offset: number, scope: MockFeedScopeKey): string {
+  const json = JSON.stringify({ o: offset, s: scope });
+  return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeMockCursor(value: string): DecodedMockCursor | null {
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(padded);
+    const parsed: unknown = JSON.parse(json);
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Object.keys(parsed).length !== 2 ||
+      typeof (parsed as { o?: unknown }).o !== "number" ||
+      !Number.isInteger((parsed as { o: number }).o) ||
+      (parsed as { o: number }).o < 0 ||
+      typeof (parsed as { s?: unknown }).s !== "string"
+    ) {
+      return null;
+    }
+    const scope = (parsed as { s: string }).s;
+    if (
+      scope !== "all" &&
+      scope !== "following" &&
+      !/^profile:[a-z0-9_]{3,15}$/.test(scope)
+    ) {
+      return null;
+    }
+    return {
+      offset: (parsed as { o: number }).o,
+      scope: scope as MockFeedScopeKey,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** S3: in-memory follows (follower -> followees). Reset per test; login stand-in and tweets above untouched. */
 const follows = new Map<string, Set<string>>();
@@ -185,18 +304,6 @@ function followersOf(username: string): number {
   return count;
 }
 
-/** Public user for a profile: known account, else a synthetic stand-in. */
-function profileUser(username: string): User {
-  const account = accounts.get(username.toLowerCase());
-  if (account !== undefined) return publicUser(account);
-  return {
-    id: `u-${username.toLowerCase()}`,
-    username,
-    bio: null,
-    avatarUrl: null,
-  };
-}
-
 /** Username behind the PROVISIONAL session stand-in, or null when logged out. */
 function currentSessionUsername(): string | null {
   if (sessionStandIn === null) return null;
@@ -212,12 +319,47 @@ function requireSession() {
     return {
       username: null as string | null,
       response: HttpResponse.json(
-        { detail: "Unauthenticated" },
+        { error: { code: "unauthenticated" } },
         { status: 401 },
       ),
     };
   }
   return { username, response: null };
+}
+
+/**
+ * Shared follow-transition guard for the real follow mirror below.
+ * Returns the known account to mutate, or the backend-exact error
+ * descriptor (unknown → 404 not_found; self-follow → 422
+ * validation_error {username:self_follow}).
+ */
+function followGate(
+  sessionUser: string,
+  target: string,
+):
+  | { ok: true; account: Account }
+  | { ok: false; status: number; body: Record<string, unknown> } {
+  const account = accounts.get(target.toLowerCase());
+  if (account === undefined) {
+    return {
+      ok: false,
+      status: 404,
+      body: { error: { code: "not_found" } },
+    };
+  }
+  if (account.username.toLowerCase() === sessionUser.toLowerCase()) {
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        error: {
+          code: "validation_error",
+          fields: { username: "self_follow" },
+        },
+      },
+    };
+  }
+  return { ok: true, account };
 }
 
 /** S1: login/logout. Registration remains explicitly signed out. */
@@ -358,96 +500,411 @@ export const handlers = [
     );
   }),
 
-  // NOTE: no GET /auth/me handler by decision — 401-anywhere is the guard.
+  // GET /auth/me mirrors the backend identity read: the snake_case user
+  // over the cookie stand-in, or 401 {error:{code:unauthenticated}} logged out.
+  http.get("*/auth/me", () => {
+    const username = currentSessionUsername();
+    const account =
+      username === null ? undefined : accounts.get(username.toLowerCase());
+    if (username === null || account === undefined) {
+      return HttpResponse.json(
+        { error: { code: "unauthenticated" } },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      id: account.id,
+      username: account.username,
+      display_name: account.displayName,
+      email: account.email,
+      created_at: account.createdAt,
+      updated_at: account.updatedAt,
+    });
+  }),
 
-  http.get("*/tweet", () => {
+  // Real cursor feed mirror: GET /tweets?page_size&cursor newest-first.
+  http.get("*/tweets", ({ request }) => {
     const { username, response } = requireSession();
     if (response !== null) return response;
     if (username === null) throw new Error("unreachable");
-    return HttpResponse.json(tweets);
+    const url = new URL(request.url);
+    const feedValues = url.searchParams.getAll("feed");
+    const usernameValues = url.searchParams.getAll("username");
+    if (feedValues.length > 1) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { feed: "invalid" } } },
+        { status: 422 },
+      );
+    }
+
+    const feed = feedValues[0];
+    let profileUsername: string | undefined;
+    let followingOnly = false;
+    let scope: MockFeedScopeKey = "all";
+    if (feed === undefined || feed === "all") {
+      if (usernameValues.length > 0) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+    } else if (feed === "following") {
+      if (usernameValues.length > 0) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      followingOnly = true;
+      scope = "following";
+    } else if (feed !== "profile") {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { feed: "invalid" } } },
+        { status: 422 },
+      );
+    } else {
+      if (usernameValues.length !== 1 || usernameValues[0] === "") {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const requestedUsername = usernameValues[0] ?? "";
+      const canonicalUsername = requestedUsername.trim().toLowerCase();
+      if (
+        !/^[\x00-\x7f]*$/.test(requestedUsername) ||
+        !/^[a-z0-9_]{3,15}$/.test(canonicalUsername)
+      ) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const account = accounts.get(canonicalUsername);
+      if (account === undefined) {
+        return HttpResponse.json(
+          { error: { code: "not_found" } },
+          { status: 404 },
+        );
+      }
+      profileUsername = account.username;
+      scope = `profile:${profileUsername}` as MockFeedScopeKey;
+    }
+
+    const pageSizes = url.searchParams.getAll("page_size");
+    let pageSize = 20;
+    if (pageSizes.length > 0) {
+      const [only] = pageSizes;
+      if (
+        pageSizes.length !== 1 ||
+        only === null ||
+        !/^(0|[1-9][0-9]*)$/.test(only)
+      ) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { page_size: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      pageSize = Number(only);
+      if (pageSize < 1 || pageSize > 50) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { page_size: "invalid" } } },
+          { status: 422 },
+        );
+      }
+    }
+    const cursors = url.searchParams.getAll("cursor");
+    let offset = 0;
+    if (cursors.length > 0) {
+      const [only] = cursors;
+      if (cursors.length !== 1 || only === null || only === "") {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { cursor: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const decoded = decodeMockCursor(only);
+      if (decoded === null || decoded.scope !== scope) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { cursor: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      offset = decoded.offset;
+    }
+    const scopedRows = (() => {
+      if (profileUsername !== undefined) {
+        return tweetRows.filter(
+          (row) =>
+            row.author.username.toLowerCase() === profileUsername.toLowerCase(),
+        );
+      }
+      if (followingOnly) {
+        const followees = follows.get(username) ?? new Set<string>();
+        return tweetRows.filter((row) =>
+          followees.has(row.author.username.toLowerCase()),
+        );
+      }
+      return tweetRows;
+    })();
+    const items = scopedRows.slice(offset, offset + pageSize).map((row) =>
+      projectTweet(row, username),
+    );
+    const nextOffset = offset + pageSize;
+    return HttpResponse.json({
+      items,
+      next_cursor:
+        nextOffset < scopedRows.length
+          ? encodeMockCursor(nextOffset, scope)
+          : null,
+    });
   }),
 
-  http.post("*/tweet", async ({ request }) => {
+  http.post("*/tweets", async ({ request }) => {
     const { username, response } = requireSession();
     if (response !== null) return response;
     if (username === null) throw new Error("unreachable");
     const body = (await request.json()) as { text?: unknown };
-    // Server is the authority on the 280 rule: the client blocks first,
-    // but a bypassed client still gets 422 here.
+    // Strip-then-check mirrors the backend (normalize_tweet_text): padding
+    // never counts toward the 280, whitespace-only is empty.
     if (
       typeof body.text !== "string" ||
       body.text.trim().length === 0 ||
-      body.text.length > TWEET_MAX_LENGTH
+      body.text.trim().length > TWEET_MAX_LENGTH
     ) {
       return HttpResponse.json(
-        { detail: "Tweet must be 1-280 characters" },
+        { error: { code: "validation_error", fields: { text: "invalid" } } },
         { status: 422 },
       );
     }
-    tweetSeq += 1;
-    const tweet: Tweet = {
-      id: `t-${tweetSeq}`,
-      authorUsername: username,
+    const row: MockTweetRow = {
+      id: crypto.randomUUID(),
       text: body.text,
-      createdAt: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      author: {
+        id: `u-${username.toLowerCase()}`,
+        username,
+        display_name: username,
+      },
     };
-    tweets.unshift(tweet);
-    return HttpResponse.json(tweet, { status: 201 });
+    tweetRows.unshift(row);
+    return HttpResponse.json(projectTweet(row, username), { status: 201 });
   }),
 
-  http.get("*/profile/:username", ({ params }) => {
-    const { username: sessionUser, response } = requireSession();
+  http.delete("*/tweets/:tweetId", ({ params }) => {
+    const { username, response } = requireSession();
     if (response !== null) return response;
-    if (sessionUser === null) throw new Error("unreachable");
-    const username = String(params.username ?? "");
-    if (username.trim() === "") {
-      return HttpResponse.json({ detail: "Not found" }, { status: 404 });
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
     }
-    const followees = follows.get(sessionUser) ?? new Set<string>();
+    const index = tweetRows.findIndex((row) => row.id === tweetId);
+    if (index === -1) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    if (tweetRows[index]?.author.username !== username) {
+      return HttpResponse.json(
+        { error: { code: "forbidden" } },
+        { status: 403 },
+      );
+    }
+    tweetRows.splice(index, 1);
+    tweetLikes.delete(tweetId);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post("*/tweets/:tweetId/like", ({ params }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    if (!tweetRows.some((row) => row.id === tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    let likers = tweetLikes.get(tweetId);
+    if (likers === undefined) {
+      likers = new Set<string>();
+      tweetLikes.set(tweetId, likers);
+    }
+    likers.add(username);
     return HttpResponse.json({
-      user: profileUser(username),
-      following: followees.has(username),
-      followersCount: followersOf(username),
-      followingCount: (follows.get(username) ?? new Set<string>()).size,
+      tweet_id: tweetId,
+      like_count: likers.size,
+      liked_by_actor: true,
     });
   }),
 
-  http.post("*/follow", async ({ request }) => {
+  http.delete("*/tweets/:tweetId/like", ({ params }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    if (!tweetRows.some((row) => row.id === tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    const likers = tweetLikes.get(tweetId) ?? new Set<string>();
+    likers.delete(username);
+    if (likers.size === 0) tweetLikes.delete(tweetId);
+    else tweetLikes.set(tweetId, likers);
+    return HttpResponse.json({
+      tweet_id: tweetId,
+      like_count: likers.size,
+      liked_by_actor: false,
+    });
+  }),
+
+  /**
+   * Public user search mirror: GET /users/search?q=. Literal substring match
+   * over username/display_name (case-insensitive), ordered by username,
+   * capped at 50. Auth precedes validation; invalid q is 422.
+   */
+  http.get("*/users/search", ({ request }) => {
+    const { response } = requireSession();
+    if (response !== null) return response;
+
+    const url = new URL(request.url);
+    const values = url.searchParams.getAll("q");
+    if (values.length !== 1) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { q: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const normalized = values[0]?.trim() ?? "";
+    if (normalized.length < 1 || normalized.length > 50) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { q: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const needle = normalized.toLowerCase();
+    const items = [...accounts.values()]
+      .filter(
+        (account) =>
+          account.username.toLowerCase().includes(needle) ||
+          account.displayName.toLowerCase().includes(needle),
+      )
+      .sort((left, right) => left.username.localeCompare(right.username))
+      .slice(0, 50)
+      .map((account) => ({
+        id: account.id,
+        username: account.username,
+        display_name: account.displayName,
+      }));
+    return HttpResponse.json({ items });
+  }),
+
+  /**
+   * Real public profile mirror: GET /users/:username. It follows the
+   * backend's canonical username validation and returns only the six
+   * public projection fields. Unknown users are 404; malformed handles
+   * are 422; an absent session is 401.
+   */
+  http.get("*/users/:username", ({ params }) => {
     const { username: sessionUser, response } = requireSession();
     if (response !== null) return response;
     if (sessionUser === null) throw new Error("unreachable");
-    const body = (await request.json()) as {
-      username?: unknown;
-      following?: unknown;
-    };
+
+    const requestedUsername = String(params.username ?? "");
+    const canonicalUsername = requestedUsername.trim().toLowerCase();
     if (
-      typeof body.username !== "string" ||
-      body.username.trim() === "" ||
-      typeof body.following !== "boolean"
+      !/^[\x00-\x7f]*$/.test(requestedUsername) ||
+      !/^[a-z0-9_]{3,15}$/.test(canonicalUsername)
     ) {
       return HttpResponse.json(
-        { detail: "username and following are required" },
+        { error: { code: "validation_error", fields: { username: "invalid" } } },
         { status: 422 },
       );
     }
-    const target = body.username;
-    if (target.toLowerCase() === sessionUser.toLowerCase()) {
+
+    const account = accounts.get(canonicalUsername);
+    if (account === undefined) {
       return HttpResponse.json(
-        { detail: "Cannot follow yourself" },
-        { status: 422 },
+        { error: { code: "not_found" } },
+        { status: 404 },
       );
     }
+    const followees = follows.get(sessionUser) ?? new Set<string>();
+    return HttpResponse.json({
+      id: account.id,
+      username: account.username,
+      display_name: account.displayName,
+      followers_count: followersOf(account.username),
+      following_count: (follows.get(account.username) ?? new Set<string>()).size,
+      followed_by_actor: followees.has(account.username),
+    });
+  }),
+
+  /**
+   * Real follow mirror: POST/DELETE /users/:username/follow, backend-exact.
+   * Success is exactly {username,following} (counts never come back on
+   * this route — the frontend keeps optimistic counts). Unknown targets
+   * 404 {error:{code:not_found}}; self-follow 422s
+   * {error:{code:validation_error},fields:{username:self_follow}} while
+   * self-unfollow stays a 200 no-op echoing the actor — all mirroring the
+   * backend follow use case. The guessed POST /follow is gone: the
+   * adapter never calls it, and MSW fails unhandled requests loudly.
+   */
+  http.post("*/users/:username/follow", ({ params }) => {
+    const { username: sessionUser, response } = requireSession();
+    if (response !== null) return response;
+    if (sessionUser === null) throw new Error("unreachable");
+    const target = String(params.username ?? "");
+    const gate = followGate(sessionUser, target);
+    // Unknown target (404) or self-follow (422) — same as the backend.
+    if (!gate.ok) return HttpResponse.json(gate.body, { status: gate.status });
     let followees = follows.get(sessionUser);
     if (followees === undefined) {
       followees = new Set<string>();
       follows.set(sessionUser, followees);
     }
-    if (body.following) followees.add(target);
-    else followees.delete(target);
+    followees.add(gate.account.username);
     return HttpResponse.json({
-      username: target,
-      following: followees.has(target),
-      followersCount: followersOf(target),
+      username: gate.account.username,
+      following: true,
+    });
+  }),
+
+  http.delete("*/users/:username/follow", ({ params }) => {
+    const { username: sessionUser, response } = requireSession();
+    if (response !== null) return response;
+    if (sessionUser === null) throw new Error("unreachable");
+    const target = String(params.username ?? "");
+    if (target.toLowerCase() === sessionUser.toLowerCase()) {
+      // Backend parity: self-unfollow is a 200 no-op echoing the actor.
+      return HttpResponse.json({ username: sessionUser, following: false });
+    }
+    const gate = followGate(sessionUser, target);
+    if (!gate.ok) return HttpResponse.json(gate.body, { status: gate.status });
+    follows.get(sessionUser)?.delete(gate.account.username);
+    return HttpResponse.json({
+      username: gate.account.username,
+      following: false,
     });
   }),
 ];

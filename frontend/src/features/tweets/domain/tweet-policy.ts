@@ -11,8 +11,12 @@ export type TweetValidation =
   | { ok: false; reason: "empty" | "too_long" };
 
 export function validateTweetText(text: string): TweetValidation {
-  if (text.trim().length === 0) return { ok: false, reason: "empty" };
-  if (text.length > TWEET_MAX_LENGTH) return { ok: false, reason: "too_long" };
+  // Strip-then-check mirrors the backend (normalize_tweet_text): surrounding
+  // whitespace never counts toward the 280, and whitespace-only is empty.
+  const stripped = text.trim();
+  if (stripped.length === 0) return { ok: false, reason: "empty" };
+  if (stripped.length > TWEET_MAX_LENGTH)
+    return { ok: false, reason: "too_long" };
   return { ok: true };
 }
 

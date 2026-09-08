@@ -1,12 +1,17 @@
 import {
   ApiError,
   type BackendGateway,
+  type FeedInput,
+  type FeedPage,
   type FollowState,
+  type LikeState,
   type LoginInput,
   type PostTweetInput,
-  type ProfileView,
+  type PublicIdentity,
+  type PublicProfile,
   type RegisterInput,
   type RegistrationResult,
+  type SetLikeInput,
   type ToggleFollowInput,
   type Tweet,
   type User,
@@ -83,93 +88,212 @@ function mapRegistration(raw: unknown): RegistrationResult {
 }
 
 /**
- * Backend-to-port mapping, isolated here so a future shape change is a
- * mechanical swap. Rejects anything that is not a well-formed Tweet.
+ * Backend-to-port tweet mapping, isolated here so backend nested-snake
+ * never leaks through the frontend port. Accepts exactly the real wire
+ * shape including actor-relative like fields and rejects drift with 500.
  */
 function mapTweet(raw: unknown): Tweet {
-  if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { id?: unknown }).id === "string" &&
-    typeof (raw as { authorUsername?: unknown }).authorUsername === "string" &&
-    typeof (raw as { text?: unknown }).text === "string" &&
-    typeof (raw as { createdAt?: unknown }).createdAt === "string"
-  ) {
-    return raw as Tweet;
+  if (!isRecord(raw) || !isRecord(raw.author)) {
+    throw new ApiError(500, "Unexpected tweet shape");
   }
-  throw new ApiError(500, "Unexpected tweet shape");
+  const createdAt = raw.createdAt ?? raw.created_at;
+  const displayName = raw.author.displayName ?? raw.author.display_name;
+  const likeCount = raw.like_count;
+  const likedByActor = raw.liked_by_actor;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.text !== "string" ||
+    typeof createdAt !== "string" ||
+    typeof raw.author.id !== "string" ||
+    typeof raw.author.username !== "string" ||
+    typeof displayName !== "string" ||
+    typeof likeCount !== "number" ||
+    !Number.isFinite(likeCount) ||
+    !Number.isInteger(likeCount) ||
+    likeCount < 0 ||
+    typeof likedByActor !== "boolean"
+  ) {
+    throw new ApiError(500, "Unexpected tweet shape");
+  }
+  return {
+    id: raw.id,
+    text: raw.text,
+    createdAt,
+    author: {
+      id: raw.author.id,
+      username: raw.author.username,
+      displayName,
+    },
+    likeCount,
+    likedByActor,
+  };
+}
+
+function mapLikeState(raw: unknown): LikeState {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 3 ||
+    typeof raw.tweet_id !== "string" ||
+    typeof raw.like_count !== "number" ||
+    !Number.isFinite(raw.like_count) ||
+    !Number.isInteger(raw.like_count) ||
+    raw.like_count < 0 ||
+    typeof raw.liked_by_actor !== "boolean"
+  ) {
+    throw new ApiError(500, "Unexpected like shape");
+  }
+  return {
+    tweetId: raw.tweet_id,
+    likeCount: raw.like_count,
+    likedByActor: raw.liked_by_actor,
+  };
+}
+
+/**
+ * Backend-to-port feed-page mapping: the {items,next_cursor} envelope
+ * becomes {items,nextCursor}. Rejects a malformed envelope with 500.
+ */
+function mapFeedPage(raw: unknown): FeedPage {
+  if (!isRecord(raw)) throw new ApiError(500, "Unexpected feed shape");
+  const nextCursor = raw.nextCursor ?? raw.next_cursor;
+  if (
+    !Array.isArray(raw.items) ||
+    (nextCursor !== null && typeof nextCursor !== "string")
+  ) {
+    throw new ApiError(500, "Unexpected feed shape");
+  }
+  return { items: raw.items.map(mapTweet), nextCursor };
 }
 
 /**
  * Backend-to-port mapping for users, isolated here like mapTweet so a
- * future shape change is a mechanical swap.
+ * future shape change is a mechanical swap. Accepts the backend snake_case
+ * identity shape (GET /auth/me: display_name, created_at, updated_at), while
+ * `email` is intentionally dropped and never enters the port (PII
+ * minimization — see port.ts).
  */
 function mapUser(raw: unknown): User {
-  if (raw !== null && typeof raw === "object") {
-    const user = raw as {
-      id?: unknown;
-      username?: unknown;
-      bio?: unknown;
-      avatarUrl?: unknown;
+  if (!isRecord(raw)) throw new ApiError(500, "Unexpected user shape");
+  const displayName = raw.displayName ?? raw.display_name;
+  const createdAt = raw.createdAt ?? raw.created_at;
+  const updatedAt = raw.updatedAt ?? raw.updated_at;
+  const avatarUrl = raw.avatarUrl ?? raw.avatar_url;
+  if (
+    typeof raw.id === "string" &&
+    typeof raw.username === "string" &&
+    typeof displayName === "string" &&
+    typeof createdAt === "string" &&
+    typeof updatedAt === "string" &&
+    (raw.bio === undefined || raw.bio === null || typeof raw.bio === "string") &&
+    (avatarUrl === undefined || avatarUrl === null || typeof avatarUrl === "string")
+  ) {
+    return {
+      id: raw.id,
+      username: raw.username,
+      displayName,
+      createdAt,
+      updatedAt,
+      bio: typeof raw.bio === "string" ? raw.bio : null,
+      avatarUrl: typeof avatarUrl === "string" ? avatarUrl : null,
     };
-    if (
-      typeof user.id === "string" &&
-      typeof user.username === "string" &&
-      (user.bio === undefined ||
-        user.bio === null ||
-        typeof user.bio === "string") &&
-      (user.avatarUrl === undefined ||
-        user.avatarUrl === null ||
-        typeof user.avatarUrl === "string")
-    ) {
-      return {
-        id: user.id,
-        username: user.username,
-        bio: typeof user.bio === "string" ? user.bio : null,
-        avatarUrl: typeof user.avatarUrl === "string" ? user.avatarUrl : null,
-      };
-    }
   }
   throw new ApiError(500, "Unexpected user shape");
 }
 
 /**
  * Backend-to-port mapping for follow-state changes, isolated here.
- * Rejects anything that is not a well-formed FollowState.
+ * Accepts exactly the real wire shape ({username,following}) — the
+ * backend forbids extras, so anything else is drift and rejects 500.
  */
 function mapFollowState(raw: unknown): FollowState {
   if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { username?: unknown }).username === "string" &&
-    typeof (raw as { following?: unknown }).following === "boolean" &&
-    typeof (raw as { followersCount?: unknown }).followersCount === "number"
+    isRecord(raw) &&
+    Object.keys(raw).length === 2 &&
+    typeof raw.username === "string" &&
+    typeof raw.following === "boolean"
   ) {
-    return raw as FollowState;
+    return { username: raw.username, following: raw.following };
   }
   throw new ApiError(500, "Unexpected follow shape");
 }
 
 /**
- * Backend-to-port mapping for profiles, isolated here.
- * Rejects anything that is not a well-formed ProfileView.
+ * Backend-to-port mapping for the exact public profile projection.
+ * The backend forbids extras; strict primitive/count checks keep session User
+ * fields and legacy nested profile shapes outside this port.
  */
-function mapProfile(raw: unknown): ProfileView {
+function mapPublicProfile(raw: unknown): PublicProfile {
+  const expectedKeys = [
+    "id",
+    "username",
+    "display_name",
+    "followers_count",
+    "following_count",
+    "followed_by_actor",
+  ];
   if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { following?: unknown }).following === "boolean" &&
-    typeof (raw as { followersCount?: unknown }).followersCount === "number" &&
-    typeof (raw as { followingCount?: unknown }).followingCount === "number"
+    !isRecord(raw) ||
+    Object.keys(raw).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.hasOwn(raw, key))
   ) {
-    return {
-      user: mapUser((raw as { user?: unknown }).user),
-      following: (raw as { following: boolean }).following,
-      followersCount: (raw as { followersCount: number }).followersCount,
-      followingCount: (raw as { followingCount: number }).followingCount,
-    };
+    throw new ApiError(500, "Unexpected profile shape");
   }
-  throw new ApiError(500, "Unexpected profile shape");
+
+  const followersCount = raw.followers_count;
+  const followingCount = raw.following_count;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.username !== "string" ||
+    typeof raw.display_name !== "string" ||
+    typeof followersCount !== "number" ||
+    !Number.isFinite(followersCount) ||
+    !Number.isInteger(followersCount) ||
+    followersCount < 0 ||
+    typeof followingCount !== "number" ||
+    !Number.isFinite(followingCount) ||
+    !Number.isInteger(followingCount) ||
+    followingCount < 0 ||
+    typeof raw.followed_by_actor !== "boolean"
+  ) {
+    throw new ApiError(500, "Unexpected profile shape");
+  }
+
+  return {
+    id: raw.id,
+    username: raw.username,
+    displayName: raw.display_name,
+    followersCount,
+    followingCount,
+    followedByActor: raw.followed_by_actor,
+  };
+}
+
+function mapPublicIdentity(raw: unknown): PublicIdentity {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 3 ||
+    typeof raw.id !== "string" ||
+    typeof raw.username !== "string" ||
+    typeof raw.display_name !== "string"
+  ) {
+    throw new ApiError(500, "Unexpected search identity shape");
+  }
+  return {
+    id: raw.id,
+    username: raw.username,
+    displayName: raw.display_name,
+  };
+}
+
+function mapSearchResponse(raw: unknown): PublicIdentity[] {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 1 ||
+    !Array.isArray(raw.items)
+  ) {
+    throw new ApiError(500, "Unexpected search shape");
+  }
+  return raw.items.map(mapPublicIdentity);
 }
 
 /**
@@ -184,7 +308,11 @@ export function createBackendGateway(
 ): BackendGateway {
   const cleanBase = baseUrl.replace(/\/+$/, "");
 
-  async function request<T>(path: string, init: RequestInit): Promise<T> {
+  async function request<T>(
+    path: string,
+    init: RequestInit,
+    options?: { suppressSessionEnd?: boolean },
+  ): Promise<T> {
     const res = await fetch(`${cleanBase}${path}`, {
       ...init,
       credentials: "include",
@@ -192,7 +320,10 @@ export function createBackendGateway(
     });
     if (res.status === 401) {
       const error = await parseError(res);
-      hooks.onSessionEnd?.();
+      // Login-scoped suppression: the login 401 is form input feedback
+      // (wrong password), never a session end. All other requests keep
+      // the central 401 → clear + /login wiring.
+      if (!options?.suppressSessionEnd) hooks.onSessionEnd?.();
       throw new ApiError(401, error.detail ?? "Unauthenticated", error);
     }
     if (!res.ok) {
@@ -218,18 +349,33 @@ export function createBackendGateway(
     },
     /**
      * POST /auth/login over the cookie session. The backend answers 204
-     * empty, so success resolves without parsing a body. 401 stays central
-     * (session end); 403 origin_not_allowed passes through untouched — it is
-     * an origin denial, not a session end.
+     * empty, so success resolves without parsing a body. A 401 here is
+     * form feedback (invalid_credentials) and never fires the central
+     * session end — the form owns the error. 403 origin_not_allowed
+     * passes through untouched — it is an origin denial, not a session end.
      */
     async login(input: LoginInput): Promise<void> {
-      await request<unknown>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-          email: input.email,
-          password: input.password,
-        }),
-      });
+      await request<unknown>(
+        "/auth/login",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            email: input.email,
+            password: input.password,
+          }),
+        },
+        { suppressSessionEnd: true },
+      );
+    },
+    /**
+     * GET /auth/me over the cookie session. No suppression: a 401 keeps
+     * the central session-end wiring and surfaces ApiError(401)
+     * unauthenticated — callers decide (login-form treats it as failure,
+     * the shell treats it as signed-out).
+     */
+    async me(): Promise<User> {
+      const raw = await request<unknown>("/auth/me", { method: "GET" });
+      return mapUser(raw);
     },
     async logout(): Promise<void> {
       await request<unknown>("/auth/logout", {
@@ -238,32 +384,85 @@ export function createBackendGateway(
       });
       hooks.onSessionEnd?.();
     },
+    /**
+     * POST /tweets over the cookie session. The backend answers 201 with
+     * the nested-snake row, remapped to the domain Tweet above. A 422
+     * here surfaces server-side 280 authority for bypassed clients.
+     */
     async createTweet(input: PostTweetInput): Promise<Tweet> {
-      const raw = await request<unknown>("/tweet", {
+      const raw = await request<unknown>("/tweets", {
         method: "POST",
         body: JSON.stringify(input),
       });
       return mapTweet(raw);
     },
-    async timeline(): Promise<Tweet[]> {
-      const raw = await request<unknown>("/tweet", { method: "GET" });
-      if (!Array.isArray(raw))
-        throw new ApiError(500, "Unexpected tweet shape");
-      return raw.map(mapTweet);
+    /**
+     * GET /tweets over the cookie session: one newest-first cursor page.
+     * page_size/cursor go on the query string (cursor only past page
+     * one). 403 origin_not_allowed passes through untouched — it is an
+     * origin denial, not a session end.
+     */
+    async feed(input?: FeedInput): Promise<FeedPage> {
+      const params = new URLSearchParams();
+      if (input?.scope?.kind === "profile") {
+        params.set("feed", "profile");
+        params.set("username", input.scope.username);
+      } else if (input?.scope?.kind === "following") {
+        params.set("feed", "following");
+      }
+      if (input?.pageSize !== undefined) {
+        params.set("page_size", String(input.pageSize));
+      }
+      if (input?.cursor !== undefined) params.set("cursor", input.cursor);
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      const raw = await request<unknown>(`/tweets${query}`, { method: "GET" });
+      return mapFeedPage(raw);
     },
-    async profile(username: string): Promise<ProfileView> {
+    /**
+     * DELETE /tweets/{id} over the cookie session. 204 resolves void;
+     * 403/404/422 reject with their backend codes for the caller to map
+     * to rollback copy. 403 passes through — never a session end.
+     */
+    async deleteTweet(id: string): Promise<void> {
+      await request<unknown>(`/tweets/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    },
+    async profile(username: string): Promise<PublicProfile> {
       const raw = await request<unknown>(
-        `/profile/${encodeURIComponent(username)}`,
+        `/users/${encodeURIComponent(username)}`,
         { method: "GET" },
       );
-      return mapProfile(raw);
+      return mapPublicProfile(raw);
     },
+    /**
+     * Follow-state change on the real paths: POST to follow, DELETE to
+     * unfollow /users/{username}/follow. Intent rides the method, so no
+     * body is sent. 404/422 reject with their backend codes for the
+     * caller to map to friendly copy — neither ends the session (only
+     * 401 does, centrally in request()).
+     */
     async setFollow(input: ToggleFollowInput): Promise<FollowState> {
-      const raw = await request<unknown>("/follow", {
-        method: "POST",
-        body: JSON.stringify(input),
+      const path = `/users/${encodeURIComponent(input.username)}/follow`;
+      const raw = await request<unknown>(path, {
+        method: input.following ? "POST" : "DELETE",
       });
       return mapFollowState(raw);
+    },
+    async searchUsers(query: string): Promise<PublicIdentity[]> {
+      const params = new URLSearchParams();
+      params.set("q", query);
+      const raw = await request<unknown>(`/users/search?${params.toString()}`, {
+        method: "GET",
+      });
+      return mapSearchResponse(raw);
+    },
+    async setLike(input: SetLikeInput): Promise<LikeState> {
+      const path = `/tweets/${encodeURIComponent(input.tweetId)}/like`;
+      const raw = await request<unknown>(path, {
+        method: input.liked ? "POST" : "DELETE",
+      });
+      return mapLikeState(raw);
     },
   };
 }

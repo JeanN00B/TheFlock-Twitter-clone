@@ -16,6 +16,9 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 const alice: User = {
   id: "u-alice",
   username: "alice",
+  displayName: "Alice",
+  createdAt: "2024-01-01T00:00:00.000Z",
+  updatedAt: "2024-01-01T00:00:00.000Z",
   bio: "Test user",
   avatarUrl: null,
 };
@@ -63,18 +66,33 @@ describe("login page seam (S1)", () => {
     ).toHaveAttribute("href", "/register");
   });
 
-  it("valid credentials establish the cookie session and navigate home", async () => {
+  it("valid credentials hydrate the session via me() and navigate home", async () => {
     renderLogin();
     submit("alice@example.com", "password123");
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/"));
-    // Backend answers 204 empty: identity lives in the httpOnly cookie,
-    // so nothing user-visible is mirrored to sessionStorage.
+    // Backend answers login with 204 empty: the form hydrates identity with
+    // GET /auth/me and mirrors the PUBLIC user only — never credentials,
+    // never the backend email (dropped at the adapter boundary).
     expect(__getAuthStandIn()).toContain("flock_session=");
-    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(screen.getByTestId("session")).toHaveTextContent("alice");
+    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY) ?? "";
+    expect(JSON.parse(raw)).toEqual({
+      user: {
+        id: "u-alice",
+        username: "alice",
+        displayName: "Alice",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        updatedAt: "2024-01-01T00:00:00.000Z",
+        bio: null,
+        avatarUrl: null,
+      },
+    });
+    expect(raw).not.toContain("alice@example.com");
+    expect(raw).not.toMatch(/password|token|jwt/i);
   });
 
-  it("401 stays signed out with an error and nothing persisted", async () => {
+  it("401 shows the form error with no session-end side effect", async () => {
     renderLogin();
     submit("alice@example.com", "wrong");
 
@@ -84,6 +102,10 @@ describe("login page seam (S1)", () => {
     expect(screen.getByTestId("session")).toHaveTextContent("empty");
     expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(push).not.toHaveBeenCalledWith("/");
+    // Login-scoped suppression: the login 401 must not fire the central
+    // session-end (no clear, no redirect to /login under the form's error).
+    expect(push).not.toHaveBeenCalledWith("/login");
+    expect(push).not.toHaveBeenCalled();
   });
 
   it("422 surfaces the email field error and stays signed out", async () => {
@@ -115,7 +137,7 @@ describe("login page seam (S1)", () => {
     }
   });
 
-  it("stale/expired/revoked 401 clears the mirror and redirects to /login", async () => {
+  it("failed login never clears a stale mirror nor redirects (login owns its 401)", async () => {
     sessionStorage.setItem(
       SESSION_STORAGE_KEY,
       JSON.stringify({ user: alice }),
@@ -125,10 +147,14 @@ describe("login page seam (S1)", () => {
 
     submit("alice@example.com", "wrong");
 
-    await waitFor(() =>
-      expect(screen.getByTestId("session")).toHaveTextContent("empty"),
-    );
-    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
-    expect(push).toHaveBeenCalledWith("/login");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+      "Invalid email or password.",
+    ));
+    // Login-scoped suppression: no central session-end fires, so the stale
+    // mirror is left for the next authenticated read to reconcile — the
+    // form error is the only outcome.
+    expect(screen.getByTestId("session")).toHaveTextContent("alice");
+    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).not.toBeNull();
+    expect(push).not.toHaveBeenCalled();
   });
 });

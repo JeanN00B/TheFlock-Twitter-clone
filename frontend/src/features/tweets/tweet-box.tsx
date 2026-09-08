@@ -19,6 +19,8 @@ interface TweetBoxProps {
   /** Posts the text (hook-owned); resolves on success, rejects ApiError. */
   onPost: (text: string) => Promise<unknown>;
   className?: string;
+  /** Label/textarea id; override when a second instance shares the DOM. */
+  id?: string;
 }
 
 /**
@@ -26,7 +28,7 @@ interface TweetBoxProps {
  * disabled until the text is postable) so over-limit posts never reach
  * the network; the server 422 remains the authority for bypasses.
  */
-export function TweetBox({ onPost, className }: TweetBoxProps) {
+export function TweetBox({ onPost, className, id = "tweet-composer" }: TweetBoxProps) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const validation = validateTweetText(text);
@@ -56,9 +58,9 @@ export function TweetBox({ onPost, className }: TweetBoxProps) {
       <CardContent>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="tweet-composer">What&apos;s happening?</Label>
+            <Label htmlFor={id}>What&apos;s happening?</Label>
             <Textarea
-              id="tweet-composer"
+              id={id}
               placeholder="Share what's happening…"
               value={text}
               onChange={(event) => setText(event.target.value)}
@@ -78,7 +80,7 @@ export function TweetBox({ onPost, className }: TweetBoxProps) {
               {text.length} / {TWEET_MAX_LENGTH}
             </span>
             <Button type="submit" disabled={!postable}>
-              <SendIcon />
+              <SendIcon data-icon="inline-start" />
               {pending ? "Posting…" : "Post"}
             </Button>
           </div>
