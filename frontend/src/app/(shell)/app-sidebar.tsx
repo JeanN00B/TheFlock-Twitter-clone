@@ -1,9 +1,29 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Bird, Home, Newspaper, UserRound, type LucideIcon } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  Bird,
+  Ellipsis,
+  Home,
+  LogOut,
+  Newspaper,
+  UserRound,
+  type LucideIcon,
+} from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { useApp } from "@/app/providers";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -37,23 +57,76 @@ function initialsFor(user: User): string {
 }
 
 function NavUser({ user }: { user: User }) {
+  const { gateway } = useApp();
+  const { clear } = useSession();
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+
+  async function onLogout() {
+    if (pending) return;
+    setPending(true);
+    try {
+      // The gateway fires the central session-end (clear + /login) on a
+      // successful POST; the explicit clear + push below keeps this seam
+      // readable and covers contexts without the binding.
+      await gateway.logout();
+      clear();
+      router.push("/login");
+    } catch {
+      toast.error("Couldn't log out. Please try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <SidebarMenuButton size="lg">
-          <Avatar>
-            {user.avatarUrl ? (
-              <AvatarImage src={user.avatarUrl} alt={user.displayName} />
-            ) : null}
-            <AvatarFallback>{initialsFor(user)}</AvatarFallback>
-          </Avatar>
-          <span className="grid flex-1 text-left text-sm leading-tight">
-            <span className="truncate font-medium">{user.displayName}</span>
-            <span className="truncate text-xs text-muted-foreground">
-              @{user.username}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<SidebarMenuButton size="lg" aria-label="Account menu" />}
+          >
+            <Avatar>
+              {user.avatarUrl ? (
+                <AvatarImage src={user.avatarUrl} alt={user.displayName} />
+              ) : null}
+              <AvatarFallback>{initialsFor(user)}</AvatarFallback>
+            </Avatar>
+            <span className="grid flex-1 text-left text-sm leading-tight">
+              <span className="truncate font-medium">{user.displayName}</span>
+              <span className="truncate text-xs text-muted-foreground">
+                @{user.username}
+              </span>
             </span>
-          </span>
-        </SidebarMenuButton>
+            <Ellipsis className="ml-auto" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="top" align="start">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>
+                <span className="grid text-left text-sm leading-tight">
+                  <span className="truncate font-medium">
+                    {user.displayName}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    @{user.username}
+                  </span>
+                </span>
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                disabled={pending}
+                onClick={() => {
+                  void onLogout();
+                }}
+              >
+                <LogOut />
+                {pending ? "Logging out…" : "Log out"}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </SidebarMenuItem>
     </SidebarMenu>
   );

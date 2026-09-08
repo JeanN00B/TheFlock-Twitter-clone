@@ -28,6 +28,15 @@ describe("tweet-policy seam (S2)", () => {
     expect(canPostTweet("   \n\t  ")).toBe(false);
   });
 
+  it("strip-then-checks: padding never counts toward the 280", () => {
+    expect(validateTweetText(`  ${"x".repeat(280)}  `)).toEqual({ ok: true });
+    expect(canPostTweet(`\n${"x".repeat(280)}\n`)).toBe(true);
+    expect(validateTweetText(`  ${"x".repeat(281)}  `)).toEqual({
+      ok: false,
+      reason: "too_long",
+    });
+  });
+
   it("accepts normal text", () => {
     expect(canPostTweet("Hello, flock!")).toBe(true);
   });

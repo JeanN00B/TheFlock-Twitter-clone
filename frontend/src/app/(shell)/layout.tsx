@@ -2,9 +2,7 @@
 
 import { type ReactNode, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { SquarePen } from "lucide-react";
 import { useApp } from "@/app/providers";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   SidebarInset,
@@ -12,6 +10,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { useSession } from "@/features/auth/session-store";
+import { ComposerProvider, NewPostButton } from "@/features/tweets/composer-dialog";
 import { ApiError } from "@/lib/api/port";
 import { AppSidebar } from "./app-sidebar";
 
@@ -53,29 +52,23 @@ export default function ShellLayout({ children }: { children: ReactNode }) {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex items-center gap-2 border-b p-2">
-          <SidebarTrigger />
-          <label htmlFor="shell-search" className="sr-only">
-            Search
-          </label>
-          <Input
-            id="shell-search"
-            type="search"
-            autoComplete="off"
-            placeholder="Search by exact username"
-            className="max-w-xs"
-          />
-          <Button
-            type="button"
-            disabled
-            title="Composer coming soon"
-            className="ml-auto"
-          >
-            <SquarePen data-icon="inline-start" />
-            New post
-          </Button>
-        </header>
-        <div className="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>
+        <ComposerProvider>
+          <header className="flex items-center gap-2 border-b p-2">
+            <SidebarTrigger />
+            <label htmlFor="shell-search" className="sr-only">
+              Search
+            </label>
+            <Input
+              id="shell-search"
+              type="search"
+              autoComplete="off"
+              placeholder="Search by exact username"
+              className="max-w-xs"
+            />
+            <NewPostButton />
+          </header>
+          <div className="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>
+        </ComposerProvider>
       </SidebarInset>
     </SidebarProvider>
   );

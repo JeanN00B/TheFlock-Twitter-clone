@@ -511,10 +511,12 @@ export const handlers = [
     if (response !== null) return response;
     if (username === null) throw new Error("unreachable");
     const body = (await request.json()) as { text?: unknown };
+    // Strip-then-check mirrors the backend (normalize_tweet_text): padding
+    // never counts toward the 280, whitespace-only is empty.
     if (
       typeof body.text !== "string" ||
       body.text.trim().length === 0 ||
-      body.text.length > TWEET_MAX_LENGTH
+      body.text.trim().length > TWEET_MAX_LENGTH
     ) {
       return HttpResponse.json(
         { error: { code: "validation_error", fields: { text: "invalid" } } },
