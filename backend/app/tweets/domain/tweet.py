@@ -6,6 +6,7 @@ from uuid import UUID
 
 
 MAX_TWEET_CODE_POINTS = 280
+MAX_LIKE_COUNT = 9_223_372_036_854_775_807
 
 
 def normalize_tweet_text(value: str) -> str:
@@ -30,6 +31,22 @@ def _require_utc(value: datetime, field: str) -> None:
         raise ValueError(f"{field} must be timezone-aware UTC")
     if value.utcoffset() != timedelta(0):
         raise ValueError(f"{field} must be UTC")
+
+
+@dataclass(frozen=True)
+class LikeState:
+    """Immutable authoritative like state for one active tweet."""
+
+    tweet_id: UUID
+    like_count: int
+    liked_by_actor: bool
+
+    def __post_init__(self) -> None:
+        _require_uuid4(self.tweet_id, "tweet_id")
+        if type(self.like_count) is not int or not 0 <= self.like_count <= MAX_LIKE_COUNT:
+            raise ValueError("like_count must be an integer in the PostgreSQL BIGINT range")
+        if type(self.liked_by_actor) is not bool:
+            raise ValueError("liked_by_actor must be a boolean")
 
 
 @dataclass(frozen=True)

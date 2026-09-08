@@ -39,6 +39,7 @@ def test_domain_and_application_modules_import_without_frameworks() -> None:
         "app.tweets.application.create_tweet",
         "app.tweets.application.list_tweet_feed",
         "app.tweets.application.delete_tweet",
+            "app.tweets.application.set_like_state",
     ]
     for module in modules:
         importlib.import_module(module)

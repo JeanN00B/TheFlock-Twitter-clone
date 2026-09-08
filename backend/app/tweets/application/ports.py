@@ -7,7 +7,7 @@ import re
 from typing import Protocol
 from uuid import UUID
 
-from app.tweets.domain.tweet import PublicTweet, Tweet
+from app.tweets.domain.tweet import LikeState, PublicTweet, Tweet
 
 
 def _validate_uuid4(value: UUID) -> None:
@@ -86,6 +86,11 @@ class DeleteOutcome(Enum):
     DELETED = "deleted"
     NOT_FOUND = "not_found"
     FORBIDDEN = "forbidden"
+
+
+class LikeStateRepository(Protocol):
+    def set_state(self, tweet_id: UUID, actor_id: UUID, liked: bool) -> LikeState | None:
+        """Atomically set the requested state and return its authoritative snapshot."""
 
 
 class TweetRepository(Protocol):
