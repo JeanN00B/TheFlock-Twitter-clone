@@ -4,6 +4,17 @@ include:
   - path: ./docker-compose.yml
 
 services:
+  # Disposable demo seeder (stdlib HTTP client, no app imports).
+  # Run: `docker compose -f docker-compose.dev.yml --profile seed run --rm twitter-seed`.
+  twitter-seed:
+    build: {context: ./backend, dockerfile: docker/Dockerfile, target: dev}
+    profiles: ["seed"]
+    volumes: [./backend/scripts:/app/scripts]
+    depends_on:
+      twitter-backend:
+        condition: service_started
+    command: ["sh", "-c", "until uv run python -c \"import urllib.request; urllib.request.urlopen('http://twitter-backend:8000/health')\" > /dev/null 2>&1; do sleep 2; done; uv run python -m scripts.seed all --base-url http://twitter-backend:8000"]
+
   twitter-backend:
     build: {context: ./backend, dockerfile: docker/Dockerfile, target: dev}
     environment:
