@@ -99,12 +99,17 @@ afterEach(() => {
 });
 
 describe("social seam (S3)", () => {
-  it("authenticated profile read shows the user, follower count, and a Follow button", async () => {
+  it("authenticated profile read shows the exact public identity, counts, initials, and Follow button", async () => {
     await loginAsAlice();
     await renderProfile("bob");
 
-    expect(await screen.findByText("@bob")).toBeInTheDocument();
+    expect(await screen.findByText("Bob", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("@bob", { exact: true })).toBeInTheDocument();
     expect(screen.getByText(/0 followers/)).toBeInTheDocument();
+    expect(screen.getByText(/0 following/)).toBeInTheDocument();
+    expect(screen.getByText("B", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Test user")).toBeNull();
+    expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByRole("button", { name: "Follow" })).toBeInTheDocument();
   });
 
@@ -243,21 +248,23 @@ describe("social seam (S3)", () => {
     expect(push).not.toHaveBeenCalledWith("/login");
   });
 
-  it("follow on an unknown user rolls back with a not-found toast and keeps the session", async () => {
+  it("unknown profile shows a local not-found state and keeps the session", async () => {
     await loginAsAlice();
-    const calls = spyOnFetch();
-    await renderProfile("ghost-nobody");
+    await renderProfile("ghostnobody");
 
-    // The frozen profile stand-in still renders; only the follow is real.
-    expect(await screen.findByText("@ghost-nobody")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Follow" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This user was not found.",
+    );
+    expect(push).not.toHaveBeenCalledWith("/login");
+  });
 
-    expect(realFollowPosts(calls, "ghost-nobody")).toHaveLength(1);
-    expect(
-      await screen.findByText("This user was not found."),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Follow" })).toBeInTheDocument();
-    // 404 is not 401: no central session end, no /login push.
+  it("invalid profile shows a local validation error and keeps the session", async () => {
+    await loginAsAlice();
+    await renderProfile("ab");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't load this profile.",
+    );
     expect(push).not.toHaveBeenCalledWith("/login");
   });
 
@@ -266,7 +273,20 @@ describe("social seam (S3)", () => {
     seedSessionMirror();
     await renderProfile("alice");
 
-    expect(await screen.findByText("@alice")).toBeInTheDocument();
+    expect(await screen.findByText("Alice", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("@alice", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^follow$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^following$/i })).toBeNull();
+  });
+
+  it("canonicalizes a mixed-case self URL before applying the self guard", async () => {
+    await loginAsAlice();
+    seedSessionMirror();
+    await renderProfile("ALICE");
+
+    expect(await screen.findByText("Alice", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("@alice", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("A", { exact: true })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^follow$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^following$/i })).toBeNull();
   });

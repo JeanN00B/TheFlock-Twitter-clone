@@ -270,21 +270,6 @@ function followersOf(username: string): number {
   return count;
 }
 
-/** Public user for a profile: known account, else a synthetic stand-in. */
-function profileUser(username: string): User {
-  const account = accounts.get(username.toLowerCase());
-  if (account !== undefined) return publicUser(account);
-  return {
-    id: `u-${username.toLowerCase()}`,
-    username,
-    displayName: username,
-    createdAt: IDENTITY_CREATED_AT,
-    updatedAt: IDENTITY_CREATED_AT,
-    bio: null,
-    avatarUrl: null,
-  };
-}
-
 /** Username behind the PROVISIONAL session stand-in, or null when logged out. */
 function currentSessionUsername(): string | null {
   if (sessionStandIn === null) return null;
@@ -617,26 +602,43 @@ export const handlers = [
   }),
 
   /**
-   * FROZEN profile read (proposal contract, MSW-only): the backend ships
-   * no GET /profile/:username, so this shape ({user,following,
-   * followersCount,followingCount}, synthetic stand-in for any non-empty
-   * username) documents the envelope the backend should implement. Only
-   * the follow paths above are real — keep this handler byte-stable.
+   * Real public profile mirror: GET /users/:username. It follows the
+   * backend's canonical username validation and returns only the six
+   * public projection fields. Unknown users are 404; malformed handles
+   * are 422; an absent session is 401.
    */
-  http.get("*/profile/:username", ({ params }) => {
+  http.get("*/users/:username", ({ params }) => {
     const { username: sessionUser, response } = requireSession();
     if (response !== null) return response;
     if (sessionUser === null) throw new Error("unreachable");
-    const username = String(params.username ?? "");
-    if (username.trim() === "") {
-      return HttpResponse.json({ detail: "Not found" }, { status: 404 });
+
+    const requestedUsername = String(params.username ?? "");
+    const canonicalUsername = requestedUsername.trim().toLowerCase();
+    if (
+      !/^[\x00-\x7f]*$/.test(requestedUsername) ||
+      !/^[a-z0-9_]{3,15}$/.test(canonicalUsername)
+    ) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { username: "invalid" } } },
+        { status: 422 },
+      );
+    }
+
+    const account = accounts.get(canonicalUsername);
+    if (account === undefined) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
     }
     const followees = follows.get(sessionUser) ?? new Set<string>();
     return HttpResponse.json({
-      user: profileUser(username),
-      following: followees.has(username),
-      followersCount: followersOf(username),
-      followingCount: (follows.get(username) ?? new Set<string>()).size,
+      id: account.id,
+      username: account.username,
+      display_name: account.displayName,
+      followers_count: followersOf(account.username),
+      following_count: (follows.get(account.username) ?? new Set<string>()).size,
+      followed_by_actor: followees.has(account.username),
     });
   }),
 

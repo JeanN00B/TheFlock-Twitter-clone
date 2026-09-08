@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/app/providers";
-import { ApiError, type ProfileView } from "@/lib/api/port";
+import { ApiError, type PublicProfile } from "@/lib/api/port";
 
 /**
- * S3 profile slice: loads the FROZEN `GET /profile/:username` mock shape
- * and toggles follow state on the REAL follow paths
+ * P5 profile slice: loads the exact `GET /users/{username}` projection
+ * and toggles follow state on the real follow paths
  * (POST/DELETE /users/{username}/follow) via `gateway.setFollow`.
  * The toggle is optimistic — the button flips immediately and rolls back
  * on failure — because the real follow response carries no counts: the
@@ -18,7 +18,7 @@ import { ApiError, type ProfileView } from "@/lib/api/port";
  */
 export function useProfile(username: string) {
   const { gateway } = useApp();
-  const [profile, setProfile] = useState<ProfileView | null>(null);
+  const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
@@ -35,9 +35,13 @@ export function useProfile(username: string) {
         setProfile(view);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!live) return;
-        setError("Couldn't load this profile.");
+        setError(
+          error instanceof ApiError && error.status === 404
+            ? "This user was not found."
+            : "Couldn't load this profile.",
+        );
         setLoading(false);
       });
     return () => {
@@ -48,10 +52,10 @@ export function useProfile(username: string) {
   const toggleFollow = useCallback(async (): Promise<void> => {
     if (profile === null || toggling) return;
     const previous = profile;
-    const nextFollowing = !profile.following;
+    const nextFollowing = !profile.followedByActor;
     setProfile({
       ...profile,
-      following: nextFollowing,
+      followedByActor: nextFollowing,
       followersCount: Math.max(
         0,
         profile.followersCount + (nextFollowing ? 1 : -1),
@@ -60,11 +64,11 @@ export function useProfile(username: string) {
     setToggling(true);
     try {
       const next = await gateway.setFollow({
-        username: previous.user.username,
+        username: previous.username,
         following: nextFollowing,
       });
       setProfile((prev) =>
-        prev === null ? prev : { ...prev, following: next.following },
+        prev === null ? prev : { ...prev, followedByActor: next.following },
       );
     } catch (error) {
       setProfile(previous);

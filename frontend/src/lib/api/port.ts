@@ -86,13 +86,14 @@ export interface FollowState {
   following: boolean;
 }
 
-/** S3 profile view over the cookie session. */
-export interface ProfileView {
-  user: User;
-  /** Whether the session user follows this profile. */
-  following: boolean;
+/** P5 public profile read projection; intentionally separate from session User. */
+export interface PublicProfile {
+  id: string;
+  username: string;
+  displayName: string;
   followersCount: number;
   followingCount: number;
+  followedByActor: boolean;
 }
 
 export class ApiError extends Error {
@@ -159,12 +160,13 @@ export interface BackendGateway {
    */
   deleteTweet(id: string): Promise<void>;
   /**
-   * GET /profile/:username — FROZEN proposal contract (MSW-only). The
-   * backend ships no profile read; this shape ({user,following,
-   * followersCount,followingCount}) documents the envelope the backend
-   * should implement. Rejects ApiError(401) when logged out.
+   * GET /users/{username} — exact public profile projection over the cookie
+   * session. It maps id, username, display_name, counts, and
+   * followed_by_actor; drift rejects as a local shape error. Rejects
+   * ApiError(401) when logged out, 404 for unknown users, and 422 for
+   * invalid usernames.
    */
-  profile(username: string): Promise<ProfileView>;
+  profile(username: string): Promise<PublicProfile>;
   /**
    * Follow-state change over the cookie session: POST
    * /users/{username}/follow to follow, DELETE /users/{username}/follow

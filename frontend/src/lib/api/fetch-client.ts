@@ -6,7 +6,7 @@ import {
   type FollowState,
   type LoginInput,
   type PostTweetInput,
-  type ProfileView,
+  type PublicProfile,
   type RegisterInput,
   type RegistrationResult,
   type ToggleFollowInput,
@@ -137,9 +137,9 @@ function mapFeedPage(raw: unknown): FeedPage {
 /**
  * Backend-to-port mapping for users, isolated here like mapTweet so a
  * future shape change is a mechanical swap. Accepts the backend snake_case
- * identity shape (GET /auth/me: display_name, created_at, updated_at) as
- * well as the camelCase profile shape. `email` is intentionally dropped
- * here and never enters the port (PII minimization — see port.ts).
+ * identity shape (GET /auth/me: display_name, created_at, updated_at), while
+ * `email` is intentionally dropped and never enters the port (PII
+ * minimization — see port.ts).
  */
 function mapUser(raw: unknown): User {
   if (!isRecord(raw)) throw new ApiError(500, "Unexpected user shape");
@@ -187,25 +187,54 @@ function mapFollowState(raw: unknown): FollowState {
 }
 
 /**
- * Backend-to-port mapping for profiles, isolated here.
- * Rejects anything that is not a well-formed ProfileView.
+ * Backend-to-port mapping for the exact public profile projection.
+ * The backend forbids extras; strict primitive/count checks keep session User
+ * fields and legacy nested profile shapes outside this port.
  */
-function mapProfile(raw: unknown): ProfileView {
+function mapPublicProfile(raw: unknown): PublicProfile {
+  const expectedKeys = [
+    "id",
+    "username",
+    "display_name",
+    "followers_count",
+    "following_count",
+    "followed_by_actor",
+  ];
   if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { following?: unknown }).following === "boolean" &&
-    typeof (raw as { followersCount?: unknown }).followersCount === "number" &&
-    typeof (raw as { followingCount?: unknown }).followingCount === "number"
+    !isRecord(raw) ||
+    Object.keys(raw).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.hasOwn(raw, key))
   ) {
-    return {
-      user: mapUser((raw as { user?: unknown }).user),
-      following: (raw as { following: boolean }).following,
-      followersCount: (raw as { followersCount: number }).followersCount,
-      followingCount: (raw as { followingCount: number }).followingCount,
-    };
+    throw new ApiError(500, "Unexpected profile shape");
   }
-  throw new ApiError(500, "Unexpected profile shape");
+
+  const followersCount = raw.followers_count;
+  const followingCount = raw.following_count;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.username !== "string" ||
+    typeof raw.display_name !== "string" ||
+    typeof followersCount !== "number" ||
+    !Number.isFinite(followersCount) ||
+    !Number.isInteger(followersCount) ||
+    followersCount < 0 ||
+    typeof followingCount !== "number" ||
+    !Number.isFinite(followingCount) ||
+    !Number.isInteger(followingCount) ||
+    followingCount < 0 ||
+    typeof raw.followed_by_actor !== "boolean"
+  ) {
+    throw new ApiError(500, "Unexpected profile shape");
+  }
+
+  return {
+    id: raw.id,
+    username: raw.username,
+    displayName: raw.display_name,
+    followersCount,
+    followingCount,
+    followedByActor: raw.followed_by_actor,
+  };
 }
 
 /**
@@ -334,12 +363,12 @@ export function createBackendGateway(
         method: "DELETE",
       });
     },
-    async profile(username: string): Promise<ProfileView> {
+    async profile(username: string): Promise<PublicProfile> {
       const raw = await request<unknown>(
-        `/profile/${encodeURIComponent(username)}`,
+        `/users/${encodeURIComponent(username)}`,
         { method: "GET" },
       );
-      return mapProfile(raw);
+      return mapPublicProfile(raw);
     },
     /**
      * Follow-state change on the real paths: POST to follow, DELETE to
