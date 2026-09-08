@@ -69,7 +69,7 @@ describe("BackendGateway auth seam (S1)", () => {
     const onSessionEnd = vi.fn();
     const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
 
-    await expect(gateway.timeline()).rejects.toBeInstanceOf(ApiError);
+    await expect(gateway.feed()).rejects.toBeInstanceOf(ApiError);
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 

@@ -1,6 +1,8 @@
 import {
   ApiError,
   type BackendGateway,
+  type FeedInput,
+  type FeedPage,
   type FollowState,
   type LoginInput,
   type PostTweetInput,
@@ -83,21 +85,53 @@ function mapRegistration(raw: unknown): RegistrationResult {
 }
 
 /**
- * Backend-to-port mapping, isolated here so a future shape change is a
- * mechanical swap. Rejects anything that is not a well-formed Tweet.
+ * Backend-to-port tweet mapping, isolated here so backend nested-snake
+ * never leaks through the frontend port. Accepts exactly the real wire
+ * shape ({id,text,created_at,author:{id,username,display_name}}) and
+ * rejects anything else with 500 so shape drift fails loudly.
  */
 function mapTweet(raw: unknown): Tweet {
-  if (
-    raw !== null &&
-    typeof raw === "object" &&
-    typeof (raw as { id?: unknown }).id === "string" &&
-    typeof (raw as { authorUsername?: unknown }).authorUsername === "string" &&
-    typeof (raw as { text?: unknown }).text === "string" &&
-    typeof (raw as { createdAt?: unknown }).createdAt === "string"
-  ) {
-    return raw as Tweet;
+  if (!isRecord(raw) || !isRecord(raw.author)) {
+    throw new ApiError(500, "Unexpected tweet shape");
   }
-  throw new ApiError(500, "Unexpected tweet shape");
+  const createdAt = raw.createdAt ?? raw.created_at;
+  const displayName = raw.author.displayName ?? raw.author.display_name;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.text !== "string" ||
+    typeof createdAt !== "string" ||
+    typeof raw.author.id !== "string" ||
+    typeof raw.author.username !== "string" ||
+    typeof displayName !== "string"
+  ) {
+    throw new ApiError(500, "Unexpected tweet shape");
+  }
+  return {
+    id: raw.id,
+    text: raw.text,
+    createdAt,
+    author: {
+      id: raw.author.id,
+      username: raw.author.username,
+      displayName,
+    },
+  };
+}
+
+/**
+ * Backend-to-port feed-page mapping: the {items,next_cursor} envelope
+ * becomes {items,nextCursor}. Rejects a malformed envelope with 500.
+ */
+function mapFeedPage(raw: unknown): FeedPage {
+  if (!isRecord(raw)) throw new ApiError(500, "Unexpected feed shape");
+  const nextCursor = raw.nextCursor ?? raw.next_cursor;
+  if (
+    !Array.isArray(raw.items) ||
+    (nextCursor !== null && typeof nextCursor !== "string")
+  ) {
+    throw new ApiError(500, "Unexpected feed shape");
+  }
+  return { items: raw.items.map(mapTweet), nextCursor };
 }
 
 /**
@@ -262,18 +296,43 @@ export function createBackendGateway(
       });
       hooks.onSessionEnd?.();
     },
+    /**
+     * POST /tweets over the cookie session. The backend answers 201 with
+     * the nested-snake row, remapped to the domain Tweet above. A 422
+     * here surfaces server-side 280 authority for bypassed clients.
+     */
     async createTweet(input: PostTweetInput): Promise<Tweet> {
-      const raw = await request<unknown>("/tweet", {
+      const raw = await request<unknown>("/tweets", {
         method: "POST",
         body: JSON.stringify(input),
       });
       return mapTweet(raw);
     },
-    async timeline(): Promise<Tweet[]> {
-      const raw = await request<unknown>("/tweet", { method: "GET" });
-      if (!Array.isArray(raw))
-        throw new ApiError(500, "Unexpected tweet shape");
-      return raw.map(mapTweet);
+    /**
+     * GET /tweets over the cookie session: one newest-first cursor page.
+     * page_size/cursor go on the query string (cursor only past page
+     * one). 403 origin_not_allowed passes through untouched — it is an
+     * origin denial, not a session end.
+     */
+    async feed(input?: FeedInput): Promise<FeedPage> {
+      const params = new URLSearchParams();
+      if (input?.pageSize !== undefined) {
+        params.set("page_size", String(input.pageSize));
+      }
+      if (input?.cursor !== undefined) params.set("cursor", input.cursor);
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      const raw = await request<unknown>(`/tweets${query}`, { method: "GET" });
+      return mapFeedPage(raw);
+    },
+    /**
+     * DELETE /tweets/{id} over the cookie session. 204 resolves void;
+     * 403/404/422 reject with their backend codes for the caller to map
+     * to rollback copy. 403 passes through — never a session end.
+     */
+    async deleteTweet(id: string): Promise<void> {
+      await request<unknown>(`/tweets/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
     },
     async profile(username: string): Promise<ProfileView> {
       const raw = await request<unknown>(

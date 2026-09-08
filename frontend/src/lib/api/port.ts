@@ -1,4 +1,4 @@
-/** S1 port: cookie-session auth boundary (S2/S3 extend this gateway). */
+/** P2 port: cookie-session auth boundary plus the real /tweets seam. */
 
 export interface User {
   id: string;
@@ -42,16 +42,35 @@ export interface RegistrationResult {
   updatedAt: string;
 }
 
-/** PROVISIONAL tweet shape (per design; mapping isolated in the adapter). */
+/** P2 tweet shape: nested author identity (backend /tweets wire shape). */
+export interface TweetAuthor {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
 export interface Tweet {
   id: string;
-  authorUsername: string;
   text: string;
   createdAt: string;
+  author: TweetAuthor;
 }
 
 export interface PostTweetInput {
   text: string;
+}
+
+/** P2 cursor page: items newest-first plus the opaque next cursor (null = caught up). */
+export interface FeedPage {
+  items: Tweet[];
+  nextCursor: string | null;
+}
+
+export interface FeedInput {
+  /** 1–50; omitted means the backend default (20). */
+  pageSize?: number;
+  /** Opaque cursor from the previous page; omitted for the first page. */
+  cursor?: string;
 }
 
 /** S3 input: declaratively set follow state for a profile (not a blind toggle). */
@@ -97,7 +116,7 @@ export class ApiError extends Error {
   }
 }
 
-/** Single gateway port. S1 owns login/logout; S2/S3 add tweet/follow methods. */
+/** Single gateway port. S1 owns login/logout/me; P2 owns the /tweets seam. */
 export interface BackendGateway {
   /** POST /auth/register — creates an account without establishing a session. */
   register(input: RegisterInput): Promise<RegistrationResult>;
@@ -120,14 +139,26 @@ export interface BackendGateway {
   /** POST /auth/logout — ends the cookie session. */
   logout(): Promise<void>;
   /**
-   * POST /tweet — creates a tweet over the cookie session.
+   * POST /tweets — creates a tweet over the cookie session.
    * Rejects ApiError(401) when logged out, ApiError(422) when the
    * server refuses the text (over 280 chars, empty). The server is
    * the authority; the client-side 280 rule is UX only.
    */
   createTweet(input: PostTweetInput): Promise<Tweet>;
-  /** GET /tweet — reads the timeline over the cookie session. */
-  timeline(): Promise<Tweet[]>;
+  /**
+   * GET /tweets — reads one newest-first cursor page over the cookie
+   * session. Rejects ApiError(401) unauthenticated when logged out,
+   * ApiError(422) validation_error with fields for a bad page_size or
+   * cursor. `nextCursor: null` means the list is caught up.
+   */
+  feed(input?: FeedInput): Promise<FeedPage>;
+  /**
+   * DELETE /tweets/{id} — deletes an own tweet over the cookie session.
+   * Resolves void on 204. Rejects ApiError(403) forbidden (not the
+   * author), ApiError(404) not_found (already gone), ApiError(422)
+   * validation_error with fields for a malformed id.
+   */
+  deleteTweet(id: string): Promise<void>;
   /**
    * GET /profile/:username — reads a profile over the cookie session.
    * Rejects ApiError(401) when logged out.

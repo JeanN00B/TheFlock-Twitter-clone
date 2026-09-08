@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import type { Tweet, User } from "@/lib/api/port";
+import type { User } from "@/lib/api/port";
 
 /**
  * PROVISIONAL cookie-session stand-in (mock-first, MSW only).
@@ -165,16 +165,77 @@ function publicUser(account: Account): User {
   };
 }
 
-/** S2: in-memory tweets. Reset per test; login stand-in above untouched. */
-const TWEET_MAX_LENGTH = 280;
-const tweets: Tweet[] = [];
-let tweetSeq = 0;
-
-/** Test-only reset for the S2 tweet store. */
-export function __resetTweets(): void {
-  tweets.length = 0;
-  tweetSeq = 0;
+/**
+ * Backend tweet row in the real nested-snake wire shape
+ * ({id,text,created_at,author:{id,username,display_name}}), newest-first.
+ * Reset per test; login stand-in above untouched.
+ */
+interface MockTweetRow {
+  id: string;
+  text: string;
+  created_at: string;
+  author: { id: string; username: string; display_name: string };
 }
+
+const TWEET_MAX_LENGTH = 280;
+const tweetRows: MockTweetRow[] = [];
+
+/** Test-only reset for the tweet store. */
+export function __resetTweets(): void {
+  tweetRows.length = 0;
+}
+
+/**
+ * Test-only seed for foreign-authored rows (delete-forbidden branches).
+ * Bypasses POST so the row can belong to anyone.
+ */
+export function __seedTweet(input: {
+  username: string;
+  text?: string;
+}): MockTweetRow {
+  const row: MockTweetRow = {
+    id: crypto.randomUUID(),
+    text: input.text ?? "foreign post",
+    created_at: new Date().toISOString(),
+    author: {
+      id: `u-${input.username.toLowerCase()}`,
+      username: input.username,
+      display_name: input.username,
+    },
+  };
+  tweetRows.unshift(row);
+  return row;
+}
+
+/** Backend cursor transport mirror: opaque base64url offset, round-trips. */
+function encodeMockCursor(offset: number): string {
+  const json = JSON.stringify({ o: offset });
+  return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeMockCursor(value: string): number | null {
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(padded);
+    const parsed: unknown = JSON.parse(json);
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Object.keys(parsed).length !== 1 ||
+      typeof (parsed as { o?: unknown }).o !== "number" ||
+      !Number.isInteger((parsed as { o: number }).o) ||
+      (parsed as { o: number }).o < 0
+    ) {
+      return null;
+    }
+    return (parsed as { o: number }).o;
+  } catch {
+    return null;
+  }
+}
+
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** S3: in-memory follows (follower -> followees). Reset per test; login stand-in and tweets above untouched. */
 const follows = new Map<string, Set<string>>();
@@ -223,7 +284,7 @@ function requireSession() {
     return {
       username: null as string | null,
       response: HttpResponse.json(
-        { detail: "Unauthenticated" },
+        { error: { code: "unauthenticated" } },
         { status: 401 },
       ),
     };
@@ -391,39 +452,115 @@ export const handlers = [
     });
   }),
 
-  http.get("*/tweet", () => {
-    const { username, response } = requireSession();
+  // Real cursor feed mirror: GET /tweets?page_size&cursor newest-first.
+  http.get("*/tweets", ({ request }) => {
+    const { response } = requireSession();
     if (response !== null) return response;
-    if (username === null) throw new Error("unreachable");
-    return HttpResponse.json(tweets);
+    const url = new URL(request.url);
+    const pageSizes = url.searchParams.getAll("page_size");
+    let pageSize = 20;
+    if (pageSizes.length > 0) {
+      const [only] = pageSizes;
+      if (
+        pageSizes.length !== 1 ||
+        only === null ||
+        !/^(0|[1-9][0-9]*)$/.test(only)
+      ) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { page_size: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      pageSize = Number(only);
+      if (pageSize < 1 || pageSize > 50) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { page_size: "invalid" } } },
+          { status: 422 },
+        );
+      }
+    }
+    const cursors = url.searchParams.getAll("cursor");
+    let offset = 0;
+    if (cursors.length > 0) {
+      const [only] = cursors;
+      if (cursors.length !== 1 || only === null || only === "") {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { cursor: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const decoded = decodeMockCursor(only);
+      if (decoded === null) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { cursor: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      offset = decoded;
+    }
+    const items = tweetRows.slice(offset, offset + pageSize);
+    const nextOffset = offset + pageSize;
+    return HttpResponse.json({
+      items,
+      next_cursor: nextOffset < tweetRows.length ? encodeMockCursor(nextOffset) : null,
+    });
   }),
 
-  http.post("*/tweet", async ({ request }) => {
+  http.post("*/tweets", async ({ request }) => {
     const { username, response } = requireSession();
     if (response !== null) return response;
     if (username === null) throw new Error("unreachable");
     const body = (await request.json()) as { text?: unknown };
-    // Server is the authority on the 280 rule: the client blocks first,
-    // but a bypassed client still gets 422 here.
     if (
       typeof body.text !== "string" ||
       body.text.trim().length === 0 ||
       body.text.length > TWEET_MAX_LENGTH
     ) {
       return HttpResponse.json(
-        { detail: "Tweet must be 1-280 characters" },
+        { error: { code: "validation_error", fields: { text: "invalid" } } },
         { status: 422 },
       );
     }
-    tweetSeq += 1;
-    const tweet: Tweet = {
-      id: `t-${tweetSeq}`,
-      authorUsername: username,
+    const row: MockTweetRow = {
+      id: crypto.randomUUID(),
       text: body.text,
-      createdAt: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      author: {
+        id: `u-${username.toLowerCase()}`,
+        username,
+        display_name: username,
+      },
     };
-    tweets.unshift(tweet);
-    return HttpResponse.json(tweet, { status: 201 });
+    tweetRows.unshift(row);
+    return HttpResponse.json(row, { status: 201 });
+  }),
+
+  http.delete("*/tweets/:tweetId", ({ params }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    const index = tweetRows.findIndex((row) => row.id === tweetId);
+    if (index === -1) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    if (tweetRows[index]?.author.username !== username) {
+      return HttpResponse.json(
+        { error: { code: "forbidden" } },
+        { status: 403 },
+      );
+    }
+    tweetRows.splice(index, 1);
+    return new HttpResponse(null, { status: 204 });
   }),
 
   http.get("*/profile/:username", ({ params }) => {

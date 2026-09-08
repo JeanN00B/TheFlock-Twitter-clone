@@ -1,0 +1,223 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  __resetAuthStandIn,
+  __resetTweets,
+  __seedTweet,
+} from "@/mocks/handlers";
+import { createBackendGateway } from "./fetch-client";
+import { ApiError } from "./port";
+
+const BASE_URL = "http://localhost:8000";
+
+beforeEach(() => {
+  __resetAuthStandIn();
+  __resetTweets();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+async function loginAsAlice() {
+  await createBackendGateway(BASE_URL).login({
+    email: "alice@example.com",
+    password: "password123",
+  });
+}
+
+describe("BackendGateway feed seam (P2)", () => {
+  it("feed remaps nested-snake rows to domain camelCase", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    await gateway.createTweet({ text: "nested hello" });
+
+    const page = await gateway.feed();
+
+    expect(page.nextCursor).toBeNull();
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toEqual({
+      id: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      ),
+      text: "nested hello",
+      createdAt: expect.stringMatching(/Z$/),
+      author: { id: "u-alice", username: "alice", displayName: "alice" },
+    });
+  });
+
+  it("feed pages newest-first with cursor round-trip to caught-up", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    for (const text of ["one", "two", "three", "four", "five"]) {
+      await gateway.createTweet({ text });
+    }
+
+    const first = await gateway.feed({ pageSize: 2 });
+    expect(first.items.map((tweet) => tweet.text)).toEqual(["five", "four"]);
+    expect(typeof first.nextCursor).toBe("string");
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const second = await gateway.feed({ pageSize: 2, cursor: first.nextCursor! });
+    expect(second.items.map((tweet) => tweet.text)).toEqual(["three", "two"]);
+    expect(typeof second.nextCursor).toBe("string");
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const third = await gateway.feed({ pageSize: 2, cursor: second.nextCursor! });
+    expect(third.items.map((tweet) => tweet.text)).toEqual(["one"]);
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it("feed sends page_size and cursor as query params, never Authorization", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    for (const text of ["a", "b", "c", "d", "e", "f", "g", "h"]) {
+      await gateway.createTweet({ text });
+    }
+    const first = await gateway.feed({ pageSize: 7 });
+    expect(typeof first.nextCursor).toBe("string");
+
+    const seen: Array<{ url: string; init?: RequestInit }> = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        seen.push({ url: String(input), init });
+        return realFetch(input, init);
+      },
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    await gateway.feed({ pageSize: 7, cursor: first.nextCursor! });
+
+    const calls = seen.filter((call) => call.url.includes("/tweets?"));
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0]?.url ?? "");
+    expect(url.searchParams.get("page_size")).toBe("7");
+    expect(url.searchParams.get("cursor")).toBe(first.nextCursor);
+    expect(calls[0]?.init?.credentials).toBe("include");
+    expect(
+      new Headers(calls[0]?.init?.headers).get("authorization"),
+    ).toBeNull();
+  });
+
+  it("feed omits cursor on the first page", async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        seen.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    await gateway.feed();
+
+    const urls = seen.filter((url) => url.includes("/tweets"));
+    expect(urls).toHaveLength(1);
+    expect(new URL(urls[0] ?? "").searchParams.has("cursor")).toBe(false);
+  });
+
+  it("feed rejects a malformed cursor with 422 validation_error fields", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    await expect(
+      gateway.feed({ cursor: "not-a-cursor!!" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+      fields: { cursor: "invalid" },
+    });
+  });
+
+  it("feed rejects logged-out reads with 401 unauthenticated and ends the session", async () => {
+    const onSessionEnd = vi.fn();
+    const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
+
+    await expect(gateway.feed()).rejects.toMatchObject({
+      status: 401,
+      code: "unauthenticated",
+    });
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("createTweet posts to /tweets and maps the nested 201 row", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    const created = await gateway.createTweet({ text: "real post" });
+
+    expect(created.author.username).toBe("alice");
+    expect(created.text).toBe("real post");
+  });
+
+  it("deleteTweet resolves void on 204 and the row is gone", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    const created = await gateway.createTweet({ text: "doomed" });
+
+    await expect(gateway.deleteTweet(created.id)).resolves.toBeUndefined();
+
+    const page = await gateway.feed();
+    expect(page.items.map((tweet) => tweet.id)).not.toContain(created.id);
+  });
+
+  it("deleteTweet rejects forbidden with 403 and keeps the row", async () => {
+    const onSessionEnd = vi.fn();
+    const gateway = createBackendGateway(BASE_URL, { onSessionEnd });
+    await loginAsAlice();
+    const foreign = __seedTweet({ username: "bob", text: "not yours" });
+
+    await expect(gateway.deleteTweet(foreign.id)).rejects.toMatchObject({
+      status: 403,
+      code: "forbidden",
+    });
+    // 403 is an origin/ownership denial, never a session end.
+    expect(onSessionEnd).not.toHaveBeenCalled();
+
+    const page = await gateway.feed();
+    expect(page.items.map((tweet) => tweet.id)).toContain(foreign.id);
+  });
+
+  it("deleteTweet rejects missing rows with 404 not_found", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    await expect(
+      gateway.deleteTweet("12345678-1234-4234-8234-1234567890ab"),
+    ).rejects.toMatchObject({ status: 404, code: "not_found" });
+  });
+
+  it("deleteTweet rejects malformed ids with 422 validation_error fields", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    await expect(gateway.deleteTweet("nope")).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+      fields: { tweet_id: "invalid" },
+    });
+  });
+
+  it("adapter rejects shape drift with 500 instead of leaking it", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return new Response(
+        JSON.stringify({
+          items: [{ id: "x", text: "drift", created_at: "now" }],
+          next_cursor: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    await expect(gateway.feed()).rejects.toBeInstanceOf(ApiError);
+    await expect(gateway.feed()).rejects.toMatchObject({ status: 500 });
+
+    vi.mocked(globalThis.fetch).mockRestore();
+    void realFetch;
+  });
+});
