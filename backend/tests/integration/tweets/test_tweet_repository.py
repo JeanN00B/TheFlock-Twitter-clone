@@ -10,15 +10,23 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-EXPECTED_DATABASE_URL = "postgresql+psycopg://flock:flockpw@localhost:5434/flockdb"
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
-if TEST_DATABASE_URL is None:
+if not TEST_DATABASE_URL:
     pytest.skip(
         "TEST_DATABASE_URL is not set; live PostgreSQL tweet repository tests skipped",
         allow_module_level=True,
     )
-if TEST_DATABASE_URL != EXPECTED_DATABASE_URL:
-    raise RuntimeError("TEST_DATABASE_URL must be the approved live PostgreSQL URL")
+
+from sqlalchemy.engine import make_url  # noqa: E402
+from sqlalchemy.exc import ArgumentError  # noqa: E402
+
+try:
+    _database_url = make_url(TEST_DATABASE_URL)
+except (ArgumentError, TypeError, ValueError):
+    raise RuntimeError("TEST_DATABASE_URL must be a valid PostgreSQL URL") from None
+if _database_url.get_backend_name() != "postgresql":
+    raise RuntimeError("TEST_DATABASE_URL must use a PostgreSQL URL")
+
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 from alembic import command as alembic_command  # noqa: E402

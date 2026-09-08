@@ -10,19 +10,25 @@ from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, event, select, update
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session
 
 pytestmark = pytest.mark.integration
 
-EXPECTED_DATABASE_URL = "postgresql+psycopg://flock:flockpw@localhost:5434/flockdb"
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 if not TEST_DATABASE_URL:
     pytest.skip(
         "TEST_DATABASE_URL is not set; PostgreSQL tweet HTTP integration test skipped",
         allow_module_level=True,
     )
-if TEST_DATABASE_URL != EXPECTED_DATABASE_URL:
-    raise RuntimeError("tweet HTTP integration requires the exact TEST_DATABASE_URL PostgreSQL URL")
+
+try:
+    _database_url = make_url(TEST_DATABASE_URL)
+except (ArgumentError, TypeError, ValueError):
+    raise RuntimeError("TEST_DATABASE_URL must be a valid PostgreSQL URL") from None
+if _database_url.get_backend_name() != "postgresql":
+    raise RuntimeError("TEST_DATABASE_URL must use a PostgreSQL URL")
 
 from app.auth.infrastructure.session_model import SessionModel  # noqa: E402
 from app.core.settings import get_settings  # noqa: E402
