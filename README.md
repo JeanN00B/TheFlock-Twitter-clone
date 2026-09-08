@@ -54,7 +54,7 @@ Default (Docker, recommended):
 docker compose -f docker-compose.dev.yml --profile seed run --rm twitter-seed
 ```
 
-This registers 10 demo users (`user1`–`user10`, passwords `userNpassword`), posts 50 tweets, and builds a deterministic follow graph. Rerunning `tweets` posts 50 more tweets (the API mints new IDs); likes are deferred to a follow-up. See `backend/scripts/seed/README.md`.
+This registers 10 demo users (`user1`–`user10`, passwords `userNpassword`), posts 50 tweets, builds a deterministic follow graph, and cross-likes 3–6 tweets per user. Rerunning `tweets` posts 50 more tweets (the API mints new IDs); follows and likes are idempotent and safe to rerun. See `backend/scripts/seed/README.md`.
 
 Local alternative:
 
