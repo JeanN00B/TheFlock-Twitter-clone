@@ -16,11 +16,24 @@ from app.users.application.follow_relationships import (
     FollowValidationError,
     UserNotFound,
 )
+from app.users.application.public_social_reads import PublicIdentity, SearchValidationError
 from app.users.domain.user import PublicUser
 from app.users.infrastructure.user_social_router import build_user_social_router
 
 ACTOR_ID = UUID("550e8400-e29b-41d4-a716-446655440000")
 INSTANT = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+
+
+class RecordingSearch:
+    def __init__(self) -> None:
+        self.terms = []
+        self.results = (PublicIdentity(ACTOR_ID, "alice_42", "Alice"),)
+
+    def execute(self, term):
+        if not isinstance(term, str) or not 1 <= len(term.strip()) <= 50:
+            raise SearchValidationError()
+        self.terms.append(term)
+        return self.results
 
 
 class RecordingUseCase:
@@ -46,7 +59,11 @@ def actor() -> PublicUser:
     )
 
 
-def client_for(use_case: RecordingUseCase, authenticated: bool = True) -> TestClient:
+def client_for(
+    use_case: RecordingUseCase,
+    authenticated: bool = True,
+    search: RecordingSearch | None = None,
+) -> TestClient:
     app = FastAPI()
 
     def current_user():
@@ -54,7 +71,13 @@ def client_for(use_case: RecordingUseCase, authenticated: bool = True) -> TestCl
             raise Unauthenticated()
         return actor()
 
-    app.include_router(build_user_social_router(lambda: use_case, current_user))
+    app.include_router(
+        build_user_social_router(
+            lambda: use_case,
+            current_user,
+            search_provider=lambda: search or RecordingSearch(),
+        )
+    )
 
     @app.exception_handler(Unauthenticated)
     async def unauthenticated(_request, _error):
@@ -124,13 +147,52 @@ def test_missing_session_is_401_before_use_case() -> None:
     assert use_case.commands == []
 
 
+def test_search_route_requires_auth_and_returns_exact_public_envelope() -> None:
+    follow = RecordingUseCase()
+    search = RecordingSearch()
+    with client_for(follow, search=search) as client:
+        response = client.get("/users/search?q=%20Alice%20")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [{"id": str(ACTOR_ID), "username": "alice_42", "display_name": "Alice"}]
+    }
+    assert search.terms == [" Alice "]
+    assert "private@example.com" not in response.text
+
+
+def test_search_rejects_missing_empty_repeated_and_too_long_q_without_call() -> None:
+    follow = RecordingUseCase()
+    search = RecordingSearch()
+    with client_for(follow, search=search) as client:
+        responses = [
+            client.get("/users/search"),
+            client.get("/users/search?q="),
+            client.get("/users/search?q=a&q=b"),
+            client.get("/users/search?q=" + "x" * 51),
+        ]
+
+    assert all(response.status_code == 422 for response in responses)
+    assert all(response.json()["error"]["fields"] == {"q": "invalid"} for response in responses)
+    assert search.terms == []
+
+
+def test_search_authentication_precedes_query_validation_and_use_case() -> None:
+    search = RecordingSearch()
+    with client_for(RecordingUseCase(), authenticated=False, search=search) as client:
+        response = client.get("/users/search")
+
+    assert response.status_code == 401
+    assert search.terms == []
+
+
 @pytest.fixture()
 def live_social_runtime(monkeypatch: pytest.MonkeyPatch):
     import os
 
     from alembic import command as alembic_command
     from alembic.config import Config as AlembicConfig
-    from sqlalchemy import create_engine, delete
+    from sqlalchemy import delete
     from sqlalchemy.orm import Session
 
     from app.auth.infrastructure.session_model import SessionModel
@@ -158,7 +220,10 @@ def live_social_runtime(monkeypatch: pytest.MonkeyPatch):
     config = AlembicConfig("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     alembic_command.upgrade(config, "e4f5a6b7c8d9")
-    engine = create_engine(database_url)
+
+    from app.main import app
+
+    engine = get_engine()
 
     def clear() -> None:
         with Session(engine) as session:
@@ -169,7 +234,6 @@ def live_social_runtime(monkeypatch: pytest.MonkeyPatch):
             session.commit()
 
     clear()
-    from app.main import app
 
     try:
         yield app, engine
@@ -198,6 +262,61 @@ def _register_and_login(client: TestClient, username: str) -> str:
     )
     assert login.status_code == 204
     return registration.json()["id"]
+
+
+@pytest.mark.integration
+def test_composed_search_is_literal_bounded_ordered_and_private_safe(live_social_runtime) -> None:
+    app, engine = live_social_runtime
+    with TestClient(app, raise_server_exceptions=False) as client:
+        _register_and_login(client, "viewer_1")
+        client.cookies.clear()
+        _register_and_login(client, "ada_lovelace")
+        client.cookies.clear()
+        _register_and_login(client, "grace_hopper")
+        for index in range(52):
+            client.cookies.clear()
+            _register_and_login(client, f"match_{index:02d}")
+
+        from sqlalchemy import event, update
+        from app.users.infrastructure.user_model import UserModel
+
+        with Session(engine) as session:
+            session.execute(
+                update(UserModel).where(UserModel.username == "ada_lovelace")
+                .values(display_name=r"Ada 100%_\ Literal")
+            )
+            session.commit()
+
+        client.cookies.clear()
+        assert client.post("/auth/login", json={
+            "email": "viewer_1@example.com", "password": "valid password"
+        }).status_code == 204
+        statements: list[str] = []
+
+        def observe(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", observe)
+        try:
+            invalid = client.get("/users/search?q=&q=x")
+            assert not any("ILIKE" in statement for statement in statements)
+            ada = client.get("/users/search?q=ADA")
+            literal = client.get(r"/users/search?q=100%25_%5C")
+            hopper = client.get("/users/search?q=hopper")
+            capped = client.get("/users/search?q=match")
+        finally:
+            event.remove(engine, "before_cursor_execute", observe)
+
+    assert invalid.status_code == 422
+    assert ada.json()["items"][0]["username"] == "ada_lovelace"
+    assert literal.json()["items"][0]["display_name"] == r"Ada 100%_\ Literal"
+    assert hopper.json()["items"][0]["username"] == "grace_hopper"
+    assert len(capped.json()["items"]) == 50
+    assert [item["username"] for item in capped.json()["items"]] == [
+        f"match_{index:02d}" for index in range(50)
+    ]
+    assert all(list(item) == ["id", "username", "display_name"] for item in capped.json()["items"])
+    assert all("email" not in item and "password" not in item for item in capped.json()["items"])
 
 
 @pytest.mark.integration

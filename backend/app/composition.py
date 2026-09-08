@@ -22,8 +22,10 @@ from app.tweets.infrastructure.tweet_router import build_tweet_router
 from app.core.settings import get_settings
 from app.users.application.credential_lookup import UserCredentialLookup
 from app.users.application.follow_relationships import SetFollowState
+from app.users.application.public_social_reads import SearchUsers
 from app.users.infrastructure.credential_lookup import SQLAlchemyUserCredentialLookup
 from app.users.infrastructure.follow_relationship_repository import SQLAlchemyFollowRelationshipRepository
+from app.users.infrastructure.public_social_read_repository import SQLAlchemyPublicSocialReadRepository
 from app.users.infrastructure.public_user_lookup import SQLAlchemyPublicUserLookup
 from app.users.infrastructure.user_social_router import build_user_social_router
 from app.users.infrastructure.registration_support import (
@@ -98,6 +100,12 @@ def get_delete_tweet(session: Session = Depends(get_db)) -> DeleteTweet:
     return DeleteTweet(repository=SQLAlchemyTweetRepository(session), clock=SystemClock())
 
 
+def get_search_users(session: Session = Depends(get_db)) -> SearchUsers:
+    """Provide one bounded public user search per request."""
+
+    return SearchUsers(SQLAlchemyPublicSocialReadRepository(session))
+
+
 def get_follow_state(session: Session = Depends(get_db)) -> SetFollowState:
     """Provide one transaction-owning follow transition per request."""
 
@@ -119,4 +127,5 @@ tweet_router = build_tweet_router(
 user_social_router = build_user_social_router(
     get_follow_state,
     current_user_dependency,
+    get_search_users,
 )
