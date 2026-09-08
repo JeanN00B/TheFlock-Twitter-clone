@@ -66,11 +66,17 @@ export interface FeedPage {
   nextCursor: string | null;
 }
 
+export type FeedScope =
+  | { kind: "all" }
+  | { kind: "profile"; username: string };
+
 export interface FeedInput {
   /** 1–50; omitted means the backend default (20). */
   pageSize?: number;
   /** Opaque cursor from the previous page; omitted for the first page. */
   cursor?: string;
+  /** Omitted means the existing global/all feed behavior. */
+  scope?: FeedScope;
 }
 
 /** S3 input: declaratively set follow state for a profile (not a blind toggle). */

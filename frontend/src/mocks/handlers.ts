@@ -223,13 +223,20 @@ export function __seedTweet(input: {
   return row;
 }
 
-/** Backend cursor transport mirror: opaque base64url offset, round-trips. */
-function encodeMockCursor(offset: number): string {
-  const json = JSON.stringify({ o: offset });
+type MockFeedScopeKey = "all" | `profile:${string}`;
+
+interface DecodedMockCursor {
+  offset: number;
+  scope: MockFeedScopeKey;
+}
+
+/** Backend cursor transport mirror: opaque base64url offset plus scope. */
+function encodeMockCursor(offset: number, scope: MockFeedScopeKey): string {
+  const json = JSON.stringify({ o: offset, s: scope });
   return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function decodeMockCursor(value: string): number | null {
+function decodeMockCursor(value: string): DecodedMockCursor | null {
   try {
     const padded = value.replace(/-/g, "+").replace(/_/g, "/");
     const json = atob(padded);
@@ -237,14 +244,22 @@ function decodeMockCursor(value: string): number | null {
     if (
       parsed === null ||
       typeof parsed !== "object" ||
-      Object.keys(parsed).length !== 1 ||
+      Object.keys(parsed).length !== 2 ||
       typeof (parsed as { o?: unknown }).o !== "number" ||
       !Number.isInteger((parsed as { o: number }).o) ||
-      (parsed as { o: number }).o < 0
+      (parsed as { o: number }).o < 0 ||
+      typeof (parsed as { s?: unknown }).s !== "string"
     ) {
       return null;
     }
-    return (parsed as { o: number }).o;
+    const scope = (parsed as { s: string }).s;
+    if (scope !== "all" && !/^profile:[a-z0-9_]{3,15}$/.test(scope)) {
+      return null;
+    }
+    return {
+      offset: (parsed as { o: number }).o,
+      scope: scope as MockFeedScopeKey,
+    };
   } catch {
     return null;
   }
@@ -493,6 +508,59 @@ export const handlers = [
     const { response } = requireSession();
     if (response !== null) return response;
     const url = new URL(request.url);
+    const feedValues = url.searchParams.getAll("feed");
+    const usernameValues = url.searchParams.getAll("username");
+    if (feedValues.length > 1) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { feed: "invalid" } } },
+        { status: 422 },
+      );
+    }
+
+    const feed = feedValues[0];
+    let profileUsername: string | undefined;
+    let scope: MockFeedScopeKey = "all";
+    if (feed === undefined) {
+      if (usernameValues.length > 0) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+    } else if (feed !== "profile") {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { feed: "invalid" } } },
+        { status: 422 },
+      );
+    } else {
+      if (usernameValues.length !== 1 || usernameValues[0] === "") {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const requestedUsername = usernameValues[0] ?? "";
+      const canonicalUsername = requestedUsername.trim().toLowerCase();
+      if (
+        !/^[\x00-\x7f]*$/.test(requestedUsername) ||
+        !/^[a-z0-9_]{3,15}$/.test(canonicalUsername)
+      ) {
+        return HttpResponse.json(
+          { error: { code: "validation_error", fields: { username: "invalid" } } },
+          { status: 422 },
+        );
+      }
+      const account = accounts.get(canonicalUsername);
+      if (account === undefined) {
+        return HttpResponse.json(
+          { error: { code: "not_found" } },
+          { status: 404 },
+        );
+      }
+      profileUsername = account.username;
+      scope = `profile:${profileUsername}` as MockFeedScopeKey;
+    }
+
     const pageSizes = url.searchParams.getAll("page_size");
     let pageSize = 20;
     if (pageSizes.length > 0) {
@@ -526,19 +594,29 @@ export const handlers = [
         );
       }
       const decoded = decodeMockCursor(only);
-      if (decoded === null) {
+      if (decoded === null || decoded.scope !== scope) {
         return HttpResponse.json(
           { error: { code: "validation_error", fields: { cursor: "invalid" } } },
           { status: 422 },
         );
       }
-      offset = decoded;
+      offset = decoded.offset;
     }
-    const items = tweetRows.slice(offset, offset + pageSize);
+    const scopedRows =
+      profileUsername === undefined
+        ? tweetRows
+        : tweetRows.filter(
+            (row) =>
+              row.author.username.toLowerCase() === profileUsername?.toLowerCase(),
+          );
+    const items = scopedRows.slice(offset, offset + pageSize);
     const nextOffset = offset + pageSize;
     return HttpResponse.json({
       items,
-      next_cursor: nextOffset < tweetRows.length ? encodeMockCursor(nextOffset) : null,
+      next_cursor:
+        nextOffset < scopedRows.length
+          ? encodeMockCursor(nextOffset, scope)
+          : null,
     });
   }),
 

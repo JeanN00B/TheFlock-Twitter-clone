@@ -345,6 +345,10 @@ export function createBackendGateway(
      */
     async feed(input?: FeedInput): Promise<FeedPage> {
       const params = new URLSearchParams();
+      if (input?.scope?.kind === "profile") {
+        params.set("feed", "profile");
+        params.set("username", input.scope.username);
+      }
       if (input?.pageSize !== undefined) {
         params.set("page_size", String(input.pageSize));
       }

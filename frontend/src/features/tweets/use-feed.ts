@@ -2,11 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "@/app/providers";
-import { ApiError, type Tweet } from "@/lib/api/port";
+import {
+  ApiError,
+  type FeedInput,
+  type FeedScope,
+  type Tweet,
+} from "@/lib/api/port";
 
 export interface UseFeedOptions {
   /** 1–50; omitted means the backend default (20). */
   pageSize?: number;
+  /** Omitted means the existing global/all feed behavior. */
+  scope?: FeedScope;
 }
 
 export interface UseFeedResult {
@@ -32,6 +39,28 @@ function deleteCopy(status: number): string {
   return "Couldn't delete that post. Please try again.";
 }
 
+function makeFeedInput(
+  pageSize: number | undefined,
+  scopeKind: "all" | "profile",
+  scopeUsername: string | undefined,
+  cursor?: string,
+): FeedInput | undefined {
+  if (
+    pageSize === undefined &&
+    cursor === undefined &&
+    scopeKind === "all"
+  ) {
+    return undefined;
+  }
+  const input: FeedInput = {};
+  if (pageSize !== undefined) input.pageSize = pageSize;
+  if (cursor !== undefined) input.cursor = cursor;
+  if (scopeKind === "profile" && scopeUsername !== undefined) {
+    input.scope = { kind: "profile", username: scopeUsername };
+  }
+  return input;
+}
+
 /**
  * P2 shared feed hook (deep module): owns cursor paging, the
  * single-flight guard, and the sentinel observer. Home renders through
@@ -44,6 +73,17 @@ function deleteCopy(status: number): string {
 export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   const { gateway } = useApp();
   const pageSize = options.pageSize;
+  const profileScope =
+    options.scope?.kind === "profile" ? options.scope : undefined;
+  const scopeKind = profileScope === undefined ? "all" : "profile";
+  const scopeUsername = profileScope?.username;
+  const scopeKey =
+    scopeKind === "profile" ? `profile:${scopeUsername}` : "all";
+  const requestInput = useCallback(
+    (cursor?: string) =>
+      makeFeedInput(pageSize, scopeKind, scopeUsername, cursor),
+    [pageSize, scopeKind, scopeUsername],
+  );
   const [tweets, setTweets] = useState<Tweet[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null | undefined>(
     undefined,
@@ -58,6 +98,7 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
 
   /** Single-flight guard: at most one page request in flight. */
   const inFlight = useRef(false);
+  const generationRef = useRef(0);
   /**
    * Synchronous mirror of `tweets` for optimistic deletes: state updaters
    * must stay pure (React may defer or re-invoke them), so the rollback
@@ -81,52 +122,60 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   // issues one redundant first-page GET; the paging discipline is intact.)
   useEffect(() => {
     let live = true;
+    const generation = ++generationRef.current;
+    inFlight.current = false;
+    setTweets([]);
+    setNextCursor(undefined);
     setLoading(true);
     setError(null);
+    setLoadingMore(false);
     setLoadMoreError(null);
+    setDeleteError(null);
+    setPendingDeleteId(null);
     gateway
-      .feed(pageSize === undefined ? undefined : { pageSize })
+      .feed(requestInput())
       .then((page) => {
-        if (!live) return;
+        if (!live || generationRef.current !== generation) return;
         setTweets(page.items);
         setNextCursor(page.nextCursor);
         setLoading(false);
       })
       .catch(() => {
-        if (!live) return;
+        if (!live || generationRef.current !== generation) return;
         setError("Couldn't load your feed.");
         setLoading(false);
       });
     return () => {
       live = false;
     };
-  }, [gateway, pageSize, reloadToken]);
+  }, [gateway, reloadToken, requestInput, scopeKey]);
 
   const loadMore = useCallback(() => {
     const { nextCursor: cursor, loadingMore: busy } = stateRef.current;
     if (inFlight.current || busy || cursor === null || cursor === undefined) {
       return;
     }
+    const generation = generationRef.current;
     inFlight.current = true;
     setLoadingMore(true);
     setLoadMoreError(null);
     gateway
-      .feed(
-        pageSize === undefined ? { cursor } : { pageSize, cursor },
-      )
+      .feed(requestInput(cursor))
       .then((page) => {
+        if (generationRef.current !== generation) return;
         setTweets((prev) => [...prev, ...page.items]);
         setNextCursor(page.nextCursor);
         setLoadingMore(false);
       })
       .catch(() => {
+        if (generationRef.current !== generation) return;
         setLoadMoreError("Couldn't load more posts.");
         setLoadingMore(false);
       })
       .finally(() => {
-        inFlight.current = false;
+        if (generationRef.current === generation) inFlight.current = false;
       });
-  }, [gateway, pageSize]);
+  }, [gateway, requestInput]);
 
   loadMoreRef.current = loadMore;
 

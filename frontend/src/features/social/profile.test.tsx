@@ -17,6 +17,7 @@ import {
   __resetAuthStandIn,
   __resetFollows,
   __resetTweets,
+  __seedTweet,
 } from "@/mocks/handlers";
 import { server } from "@/mocks/server";
 
@@ -266,6 +267,102 @@ describe("social seam (S3)", () => {
       "Couldn't load this profile.",
     );
     expect(push).not.toHaveBeenCalledWith("/login");
+  });
+
+  it("renders only the resolved profile's scoped posts", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "alice", text: "alice global row" });
+    __seedTweet({ username: "bob", text: "bob profile row" });
+
+    await renderProfile("BoB");
+
+    expect(await screen.findByText("bob profile row")).toBeInTheDocument();
+    expect(screen.queryByText("alice global row")).toBeNull();
+  });
+
+  it("uses the canonical profile username after profile resolution", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "canonical bob row" });
+    const calls = spyOnFetch();
+
+    await renderProfile("BoB");
+    await screen.findByText("canonical bob row");
+
+    const profileIndex = calls.findIndex(
+      (call) => new URL(call.url).pathname === "/users/BoB",
+    );
+    const feedIndex = calls.findIndex(
+      (call) => new URL(call.url).pathname === "/tweets",
+    );
+    expect(profileIndex).toBeGreaterThanOrEqual(0);
+    expect(feedIndex).toBeGreaterThan(profileIndex);
+    const feedUrl = new URL(calls[feedIndex]?.url ?? "");
+    expect(feedUrl.searchParams.get("feed")).toBe("profile");
+    expect(feedUrl.searchParams.get("username")).toBe("bob");
+  });
+
+  it("shows the profile empty state without global substitution", async () => {
+    await loginAsAlice();
+    await renderProfile("bob");
+
+    expect(
+      await screen.findByText("No posts yet — be the first to share something."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows caught-up after a non-empty profile feed completes", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "caught up row" });
+
+    await renderProfile("bob");
+
+    expect(await screen.findByText("caught up row")).toBeInTheDocument();
+    expect(await screen.findByText("You're caught up")).toBeInTheDocument();
+  });
+
+  it("keeps the resolved profile visible while its feed retries locally", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "retryable bob row" });
+    let attempts = 0;
+    server.use(
+      http.get("*/tweets", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get("feed") !== "profile") return undefined;
+        attempts += 1;
+        if (attempts === 1) {
+          return HttpResponse.json(
+            { error: { code: "internal" } },
+            { status: 500 },
+          );
+        }
+        return undefined;
+      }),
+    );
+
+    await renderProfile("bob");
+    expect(await screen.findByText("Bob", { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load your feed.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("retryable bob row")).toBeInTheDocument();
+  });
+
+  it("keeps delete-own behavior for posts in a self profile scope", async () => {
+    await loginAsAlice();
+    const gateway = createBackendGateway(BASE_URL);
+    const created = await gateway.createTweet({ text: "self profile row" });
+    seedSessionMirror();
+
+    await renderProfile("ALICE");
+    expect(await screen.findByText("self profile row")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /delete post by @alice/i }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("self profile row")).not.toBeInTheDocument(),
+    );
+    expect((await gateway.feed({ scope: { kind: "profile", username: "alice" } })).items).not.toContainEqual(
+      expect.objectContaining({ id: created.id }),
+    );
   });
 
   it("own profile shows no Follow button (others-only)", async () => {

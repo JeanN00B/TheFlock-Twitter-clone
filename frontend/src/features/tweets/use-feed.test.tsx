@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { createBackendGateway } from "@/lib/api/fetch-client";
 import {
@@ -66,6 +66,10 @@ async function loginAsAlice() {
   });
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   push.mockClear();
   sessionStorage.clear();
@@ -127,6 +131,43 @@ describe("useFeed (P2)", () => {
       ]),
     );
     expect(result.current.hasMore).toBe(false);
+  });
+
+  it("sentinel pages a profile scope without dropping its username", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "old bob" });
+    __seedTweet({ username: "bob", text: "middle bob" });
+    __seedTweet({ username: "bob", text: "new bob" });
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        calls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    const { result } = renderHook(
+      () =>
+        useFeed({
+          pageSize: 2,
+          scope: { kind: "profile", username: "bob" },
+        }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const sentinel = document.createElement("div");
+    act(() => result.current.sentinelRef(sentinel));
+    fireIntersecting();
+    await waitFor(() => expect(result.current.tweets).toHaveLength(3));
+
+    const pageCalls = calls.filter((url) => url.includes("/tweets"));
+    expect(pageCalls).toHaveLength(2);
+    for (const value of pageCalls) {
+      const url = new URL(value);
+      expect(url.searchParams.get("feed")).toBe("profile");
+      expect(url.searchParams.get("username")).toBe("bob");
+    }
   });
 
   it("single-flights duplicate page requests", async () => {
@@ -216,6 +257,203 @@ describe("useFeed (P2)", () => {
     );
     expect(result.current.loadMoreError).toBeNull();
     expect(result.current.hasMore).toBe(false);
+  });
+
+  it("retains profile scope and cursor on paging failure and retry", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "old bob" });
+    __seedTweet({ username: "bob", text: "middle bob" });
+    __seedTweet({ username: "bob", text: "new bob" });
+    let attempts = 0;
+    server.use(
+      http.get("*/tweets", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.has("cursor")) {
+          attempts += 1;
+          if (attempts === 1) {
+            return HttpResponse.json(
+              { error: { code: "boom" } },
+              { status: 500 },
+            );
+          }
+        }
+        return undefined;
+      }),
+    );
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        calls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    const { result } = renderHook(
+      () =>
+        useFeed({
+          pageSize: 2,
+          scope: { kind: "profile", username: "bob" },
+        }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "new bob",
+      "middle bob",
+    ]);
+    expect(result.current.hasMore).toBe(true);
+
+    act(() => {
+      result.current.loadMore();
+    });
+    await waitFor(() => expect(result.current.loadMoreError).not.toBeNull());
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "new bob",
+      "middle bob",
+    ]);
+
+    act(() => {
+      result.current.loadMore();
+    });
+    await waitFor(() => expect(result.current.tweets).toHaveLength(3));
+    const pageCalls = calls.filter((url) => url.includes("/tweets"));
+    expect(pageCalls).toHaveLength(3);
+    const first = new URL(pageCalls[0] ?? "");
+    const failed = new URL(pageCalls[1] ?? "");
+    const retried = new URL(pageCalls[2] ?? "");
+    expect(first.searchParams.get("feed")).toBe("profile");
+    expect(first.searchParams.get("username")).toBe("bob");
+    expect(failed.search).toBe(retried.search);
+    expect(retried.searchParams.get("feed")).toBe("profile");
+    expect(retried.searchParams.get("username")).toBe("bob");
+  });
+
+  it("resets scope state and discards a late response from the old profile", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "alice", text: "alice row" });
+    let releaseBob!: () => void;
+    const bobGate = new Promise<void>((resolve) => {
+      releaseBob = resolve;
+    });
+    let bobStarted = false;
+    server.use(
+      http.get("*/tweets", async ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get("username") !== "bob") return undefined;
+        bobStarted = true;
+        await bobGate;
+        return HttpResponse.json({
+          items: [
+            {
+              id: "00000000-0000-4000-8000-000000000099",
+              text: "late bob",
+              created_at: "2024-01-01T00:00:00.000Z",
+              author: {
+                id: "u-bob",
+                username: "bob",
+                display_name: "Bob",
+              },
+            },
+          ],
+          next_cursor: null,
+        });
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ username }: { username: string }) =>
+        useFeed({ scope: { kind: "profile", username } }),
+      { wrapper, initialProps: { username: "bob" } },
+    );
+    await waitFor(() => expect(bobStarted).toBe(true));
+
+    rerender({ username: "alice" });
+    await waitFor(() =>
+      expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+        "alice row",
+      ]),
+    );
+    releaseBob();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "alice row",
+    ]);
+  });
+
+  it("discards a late profile page when reload starts a new generation", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "oldest bob" });
+    __seedTweet({ username: "bob", text: "middle bob" });
+    __seedTweet({ username: "bob", text: "newest bob" });
+    let releasePage!: () => void;
+    const pageGate = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+    let pageStarted = false;
+    server.use(
+      http.get("*/tweets", async ({ request }) => {
+        const url = new URL(request.url);
+        if (
+          url.searchParams.get("username") !== "bob" ||
+          !url.searchParams.has("cursor")
+        ) {
+          return undefined;
+        }
+        pageStarted = true;
+        await pageGate;
+        return HttpResponse.json({
+          items: [
+            {
+              id: "00000000-0000-4000-8000-000000000098",
+              text: "late page",
+              created_at: "2024-01-01T00:00:00.000Z",
+              author: {
+                id: "u-bob",
+                username: "bob",
+                display_name: "Bob",
+              },
+            },
+          ],
+          next_cursor: null,
+        });
+      }),
+    );
+
+    const { result } = renderHook(
+      () =>
+        useFeed({
+          pageSize: 2,
+          scope: { kind: "profile", username: "bob" },
+        }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "newest bob",
+      "middle bob",
+    ]);
+
+    act(() => {
+      result.current.loadMore();
+    });
+    await waitFor(() => expect(pageStarted).toBe(true));
+
+    act(() => {
+      result.current.reload();
+    });
+    await waitFor(() =>
+      expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+        "newest bob",
+        "middle bob",
+      ]),
+    );
+    releasePage();
+    await waitFor(() => expect(result.current.loadingMore).toBe(false));
+    expect(result.current.tweets.map((tweet) => tweet.text)).toEqual([
+      "newest bob",
+      "middle bob",
+    ]);
   });
 
   it("delete removes optimistically and commits on 204", async () => {

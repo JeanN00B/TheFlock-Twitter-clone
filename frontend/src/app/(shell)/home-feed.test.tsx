@@ -6,7 +6,11 @@ import { SESSION_STORAGE_KEY } from "@/features/auth/session-store";
 import { ComposerProvider } from "@/features/tweets/composer-dialog";
 import { createBackendGateway } from "@/lib/api/fetch-client";
 import type { User } from "@/lib/api/port";
-import { __resetAuthStandIn, __resetTweets } from "@/mocks/handlers";
+import {
+  __resetAuthStandIn,
+  __resetTweets,
+  __seedTweet,
+} from "@/mocks/handlers";
 import ShellLayout from "./layout";
 import Home from "./page";
 
@@ -82,6 +86,26 @@ describe("home feed (P2)", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]).toHaveTextContent("seeded newer");
     expect(items[1]).toHaveTextContent("seeded older");
+  });
+
+  it("keeps Home on the existing global feed URL", async () => {
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "global home row" });
+    seedSessionMirror();
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        urls.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    renderHome();
+    expect(await screen.findByText("global home row")).toBeInTheDocument();
+    const feedUrl = new URL(urls.find((url) => url.includes("/tweets")) ?? "");
+    expect(feedUrl.searchParams.has("feed")).toBe(false);
+    expect(feedUrl.searchParams.has("username")).toBe(false);
   });
 
   it("server stays authority: 281 chars rejects with 422", async () => {

@@ -6,6 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useSession } from "@/features/auth/session-store";
 import { FollowButton } from "@/features/social/follow-button";
 import { useProfile } from "@/features/social/use-profile";
+import { FeedList } from "@/features/tweets/feed-list";
+import { useFeed } from "@/features/tweets/use-feed";
 
 interface ProfilePageProps {
   params: Promise<{ username: string }>;
@@ -19,6 +21,15 @@ function initialsFor(displayName: string, username: string): string {
     .map((part) => part[0])
     .join("");
   return fromName ? fromName.toUpperCase() : username.slice(0, 2).toUpperCase();
+}
+
+function ProfilePosts({ username }: { username: string }) {
+  const feed = useFeed({ scope: { kind: "profile", username } });
+  return (
+    <section aria-label={`Posts by @${username}`}>
+      <FeedList feed={feed} />
+    </section>
+  );
 }
 
 /** Thin inbound adapter: composes the profile hook + follow button, no logic. */
@@ -46,36 +57,39 @@ export default function ProfilePage({ params }: ProfilePageProps) {
         </p>
       ) : null}
       {!loading && error === null && profile !== null ? (
-        <Card className="py-4">
-          <CardContent className="flex items-center gap-4">
-            <Avatar size="lg">
-              <AvatarFallback>
-                {initialsFor(profile.displayName, profile.username)}
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <p className="truncate text-base font-semibold">
-                {profile.displayName}
-              </p>
-              <p className="truncate text-sm text-muted-foreground">
-                @{profile.username}
-              </p>
-              <p
-                aria-live="polite"
-                className="text-sm text-muted-foreground tabular-nums"
-              >
-                {`${profile.followersCount} ${profile.followersCount === 1 ? "follower" : "followers"} · ${profile.followingCount} following`}
-              </p>
-            </div>
-            {isSelf ? null : (
-              <FollowButton
-                following={profile.followedByActor}
-                pending={toggling}
-                onToggle={toggleFollow}
-              />
-            )}
-          </CardContent>
-        </Card>
+        <>
+          <Card className="py-4">
+            <CardContent className="flex items-center gap-4">
+              <Avatar size="lg">
+                <AvatarFallback>
+                  {initialsFor(profile.displayName, profile.username)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <p className="truncate text-base font-semibold">
+                  {profile.displayName}
+                </p>
+                <p className="truncate text-sm text-muted-foreground">
+                  @{profile.username}
+                </p>
+                <p
+                  aria-live="polite"
+                  className="text-sm text-muted-foreground tabular-nums"
+                >
+                  {`${profile.followersCount} ${profile.followersCount === 1 ? "follower" : "followers"} · ${profile.followingCount} following`}
+                </p>
+              </div>
+              {isSelf ? null : (
+                <FollowButton
+                  following={profile.followedByActor}
+                  pending={toggling}
+                  onToggle={toggleFollow}
+                />
+              )}
+            </CardContent>
+          </Card>
+          <ProfilePosts username={profile.username} />
+        </>
       ) : null}
     </main>
   );

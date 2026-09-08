@@ -118,6 +118,128 @@ describe("BackendGateway feed seam (P2)", () => {
     expect(new URL(urls[0] ?? "").searchParams.has("cursor")).toBe(false);
   });
 
+  it("serializes the canonical profile scope on the first and cursor pages", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "older bob" });
+    __seedTweet({ username: "bob", text: "newer bob" });
+
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        seen.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    const first = await gateway.feed({
+      scope: { kind: "profile", username: "bob" },
+      pageSize: 1,
+    });
+    expect(first.items.map((tweet) => tweet.author.username)).toEqual(["bob"]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    await gateway.feed({
+      scope: { kind: "profile", username: "bob" },
+      pageSize: 1,
+      cursor: first.nextCursor!,
+    });
+
+    const tweetUrls = seen.filter((url) => url.includes("/tweets?"));
+    expect(tweetUrls).toHaveLength(2);
+    for (const [index, value] of tweetUrls.entries()) {
+      const url = new URL(value);
+      expect(url.searchParams.get("feed")).toBe("profile");
+      expect(url.searchParams.get("username")).toBe("bob");
+      expect(url.searchParams.get("page_size")).toBe("1");
+      if (index === 0) expect(url.searchParams.has("cursor")).toBe(false);
+      else expect(url.searchParams.has("cursor")).toBe(true);
+    }
+  });
+
+  it("keeps an explicit all scope on the existing unscoped URL", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    __seedTweet({ username: "bob", text: "global row" });
+
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init) => {
+        seen.push(String(input));
+        return realFetch(input, init);
+      },
+    );
+
+    await gateway.feed({ scope: { kind: "all" } });
+
+    const url = new URL(seen.find((value) => value.includes("/tweets")) ?? "");
+    expect(url.searchParams.has("feed")).toBe(false);
+    expect(url.searchParams.has("username")).toBe(false);
+  });
+
+  it("rejects a cursor from another feed scope", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+    __seedTweet({ username: "alice", text: "alice row" });
+    __seedTweet({ username: "bob", text: "older bob" });
+    __seedTweet({ username: "bob", text: "newer bob" });
+
+    const global = await gateway.feed({ pageSize: 1 });
+    await expect(
+      gateway.feed({
+        scope: { kind: "profile", username: "bob" },
+        pageSize: 1,
+        cursor: global.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+      fields: { cursor: "invalid" },
+    });
+
+    const bob = await gateway.feed({
+      scope: { kind: "profile", username: "bob" },
+      pageSize: 1,
+    });
+    await expect(
+      gateway.feed({
+        scope: { kind: "profile", username: "alice" },
+        pageSize: 1,
+        cursor: bob.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+      fields: { cursor: "invalid" },
+    });
+  });
+
+  it("rejects missing or duplicate scope query parameters", async () => {
+    const gateway = createBackendGateway(BASE_URL);
+    await loginAsAlice();
+
+    const cases = [
+      ["/tweets?feed=profile", { username: "invalid" }],
+      ["/tweets?username=bob", { username: "invalid" }],
+      ["/tweets?feed=profile&username=bob&username=bob", { username: "invalid" }],
+      ["/tweets?feed=profile&feed=profile&username=bob", { feed: "invalid" }],
+      ["/tweets?feed=profile&username=ab", { username: "invalid" }],
+    ] as const;
+
+    for (const [path, fields] of cases) {
+      const response = await fetch(`${BASE_URL}${path}`, {
+        credentials: "include",
+      });
+      expect(response.status, path).toBe(422);
+      await expect(response.json(), path).resolves.toEqual({
+        error: { code: "validation_error", fields },
+      });
+    }
+  });
+
   it("feed rejects a malformed cursor with 422 validation_error fields", async () => {
     const gateway = createBackendGateway(BASE_URL);
     await loginAsAlice();
