@@ -54,10 +54,25 @@ export interface Tweet {
   text: string;
   createdAt: string;
   author: TweetAuthor;
+  likeCount: number;
+  likedByActor: boolean;
 }
 
 export interface PostTweetInput {
   text: string;
+}
+
+/** Authoritative like-state envelope from POST/DELETE /tweets/{id}/like. */
+export interface LikeState {
+  tweetId: string;
+  likeCount: number;
+  likedByActor: boolean;
+}
+
+export interface SetLikeInput {
+  tweetId: string;
+  /** Desired state: true to like, false to unlike. */
+  liked: boolean;
 }
 
 /** P2 cursor page: items newest-first plus the opaque next cursor (null = caught up). */
@@ -198,4 +213,11 @@ export interface BackendGateway {
    * `q` is missing, empty after trim, duplicated, or longer than 50.
    */
   searchUsers(query: string): Promise<PublicIdentity[]>;
+  /**
+   * Like-state change: POST /tweets/{id}/like or DELETE /tweets/{id}/like.
+   * Resolves with exact `{tweetId,likeCount,likedByActor}`. Rejects
+   * ApiError(401) when logged out, ApiError(404) not_found, ApiError(422)
+   * validation_error for a malformed id.
+   */
+  setLike(input: SetLikeInput): Promise<LikeState>;
 }

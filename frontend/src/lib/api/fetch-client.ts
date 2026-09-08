@@ -4,12 +4,14 @@ import {
   type FeedInput,
   type FeedPage,
   type FollowState,
+  type LikeState,
   type LoginInput,
   type PostTweetInput,
   type PublicIdentity,
   type PublicProfile,
   type RegisterInput,
   type RegistrationResult,
+  type SetLikeInput,
   type ToggleFollowInput,
   type Tweet,
   type User,
@@ -88,8 +90,7 @@ function mapRegistration(raw: unknown): RegistrationResult {
 /**
  * Backend-to-port tweet mapping, isolated here so backend nested-snake
  * never leaks through the frontend port. Accepts exactly the real wire
- * shape ({id,text,created_at,author:{id,username,display_name}}) and
- * rejects anything else with 500 so shape drift fails loudly.
+ * shape including actor-relative like fields and rejects drift with 500.
  */
 function mapTweet(raw: unknown): Tweet {
   if (!isRecord(raw) || !isRecord(raw.author)) {
@@ -97,13 +98,20 @@ function mapTweet(raw: unknown): Tweet {
   }
   const createdAt = raw.createdAt ?? raw.created_at;
   const displayName = raw.author.displayName ?? raw.author.display_name;
+  const likeCount = raw.like_count;
+  const likedByActor = raw.liked_by_actor;
   if (
     typeof raw.id !== "string" ||
     typeof raw.text !== "string" ||
     typeof createdAt !== "string" ||
     typeof raw.author.id !== "string" ||
     typeof raw.author.username !== "string" ||
-    typeof displayName !== "string"
+    typeof displayName !== "string" ||
+    typeof likeCount !== "number" ||
+    !Number.isFinite(likeCount) ||
+    !Number.isInteger(likeCount) ||
+    likeCount < 0 ||
+    typeof likedByActor !== "boolean"
   ) {
     throw new ApiError(500, "Unexpected tweet shape");
   }
@@ -116,6 +124,28 @@ function mapTweet(raw: unknown): Tweet {
       username: raw.author.username,
       displayName,
     },
+    likeCount,
+    likedByActor,
+  };
+}
+
+function mapLikeState(raw: unknown): LikeState {
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 3 ||
+    typeof raw.tweet_id !== "string" ||
+    typeof raw.like_count !== "number" ||
+    !Number.isFinite(raw.like_count) ||
+    !Number.isInteger(raw.like_count) ||
+    raw.like_count < 0 ||
+    typeof raw.liked_by_actor !== "boolean"
+  ) {
+    throw new ApiError(500, "Unexpected like shape");
+  }
+  return {
+    tweetId: raw.tweet_id,
+    likeCount: raw.like_count,
+    likedByActor: raw.liked_by_actor,
   };
 }
 
@@ -426,6 +456,13 @@ export function createBackendGateway(
         method: "GET",
       });
       return mapSearchResponse(raw);
+    },
+    async setLike(input: SetLikeInput): Promise<LikeState> {
+      const path = `/tweets/${encodeURIComponent(input.tweetId)}/like`;
+      const raw = await request<unknown>(path, {
+        method: input.liked ? "POST" : "DELETE",
+      });
+      return mapLikeState(raw);
     },
   };
 }

@@ -31,6 +31,10 @@ export interface UseFeedResult {
   removeTweet: (id: string) => Promise<void>;
   deleteError: string | null;
   pendingDeleteId: string | null;
+  /** Optimistic like toggle; authoritative like envelope commits. */
+  setTweetLike: (id: string, liked: boolean) => Promise<void>;
+  likeError: string | null;
+  pendingLikeId: string | null;
 }
 
 function deleteCopy(status: number): string {
@@ -105,6 +109,8 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [likeError, setLikeError] = useState<string | null>(null);
+  const [pendingLikeId, setPendingLikeId] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   /** Single-flight guard: at most one page request in flight. */
@@ -143,6 +149,8 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     setLoadMoreError(null);
     setDeleteError(null);
     setPendingDeleteId(null);
+    setLikeError(null);
+    setPendingLikeId(null);
     gateway
       .feed(requestInput())
       .then((page) => {
@@ -237,6 +245,53 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     [gateway],
   );
 
+  const setTweetLike = useCallback(
+    async (id: string, liked: boolean): Promise<void> => {
+      const snapshot = tweetsRef.current;
+      const current = snapshot.find((tweet) => tweet.id === id);
+      if (current === undefined) return;
+
+      let nextCount = current.likeCount;
+      if (liked && !current.likedByActor) nextCount += 1;
+      if (!liked && current.likedByActor) nextCount = Math.max(0, nextCount - 1);
+
+      setTweets(
+        snapshot.map((tweet) =>
+          tweet.id === id
+            ? { ...tweet, likedByActor: liked, likeCount: nextCount }
+            : tweet,
+        ),
+      );
+      setLikeError(null);
+      setPendingLikeId(id);
+      try {
+        const state = await gateway.setLike({ tweetId: id, liked });
+        setTweets((prev) =>
+          prev.map((tweet) =>
+            tweet.id === id
+              ? {
+                  ...tweet,
+                  likeCount: state.likeCount,
+                  likedByActor: state.likedByActor,
+                }
+              : tweet,
+          ),
+        );
+      } catch (err) {
+        setTweets(snapshot);
+        setLikeError(
+          err instanceof ApiError && err.status === 404
+            ? "That post is already gone."
+            : "Couldn't update like. Please try again.",
+        );
+        throw err;
+      } finally {
+        setPendingLikeId(null);
+      }
+    },
+    [gateway],
+  );
+
   return {
     tweets,
     loading,
@@ -250,5 +305,8 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     removeTweet,
     deleteError,
     pendingDeleteId,
+    setTweetLike,
+    likeError,
+    pendingLikeId,
   };
 }

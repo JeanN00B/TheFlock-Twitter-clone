@@ -1,10 +1,12 @@
 "use client";
 
-import { Trash2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { HeartIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/features/auth/session-store";
+import type { Tweet } from "@/lib/api/port";
 import type { UseFeedResult } from "./use-feed";
 
 interface FeedListProps {
@@ -22,11 +24,92 @@ function LoadingRows({ label }: { label: string }) {
   );
 }
 
+function TweetCard({
+  tweet,
+  own,
+  feed,
+}: {
+  tweet: Tweet;
+  own: boolean;
+  feed: UseFeedResult;
+}) {
+  const router = useRouter();
+  const deleting = feed.pendingDeleteId === tweet.id;
+  const liking = feed.pendingLikeId === tweet.id;
+
+  return (
+    <Card className="py-3">
+      <CardContent className="flex flex-col gap-1">
+        <button
+          type="button"
+          className="w-fit text-left text-sm font-medium hover:underline"
+          onClick={() => {
+            router.push(`/profile/${tweet.author.username}`);
+          }}
+          aria-label={`View @${tweet.author.username}'s profile`}
+        >
+          {tweet.author.displayName}{" "}
+          <span className="font-normal text-muted-foreground">
+            @{tweet.author.username}
+          </span>
+        </button>
+        <p className="text-sm break-words">{tweet.text}</p>
+        <div className="flex items-center justify-between gap-2">
+          <time
+            dateTime={tweet.createdAt}
+            className="text-xs text-muted-foreground"
+          >
+            {new Date(tweet.createdAt).toLocaleString()}
+          </time>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={liking}
+              aria-pressed={tweet.likedByActor}
+              aria-label={
+                tweet.likedByActor
+                  ? `Unlike post by @${tweet.author.username}`
+                  : `Like post by @${tweet.author.username}`
+              }
+              onClick={() => {
+                void feed
+                  .setTweetLike(tweet.id, !tweet.likedByActor)
+                  .catch(() => {});
+              }}
+            >
+              <HeartIcon
+                data-icon="inline-start"
+                className={tweet.likedByActor ? "fill-current" : undefined}
+              />
+              {tweet.likeCount}
+            </Button>
+            {own ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={deleting}
+                onClick={() => {
+                  void feed.removeTweet(tweet.id).catch(() => {});
+                }}
+                aria-label={`Delete post by @${tweet.author.username}`}
+              >
+                <Trash2Icon data-icon="inline-start" />
+                {deleting ? "Deleting…" : "Delete"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 /**
- * P2 home feed list (thin view): renders `useFeed` rows newest-first with
- * sentinel auto-paging plus an explicit Load-more fallback, skeleton /
- * retry / caught-up rows, and delete-own buttons (`author.id == me.id`).
- * No fetch here — all state transitions live in the hook.
+ * Shared feed list: newest-first rows with sentinel paging, like toggle,
+ * delete-own, and author alias → profile navigation.
  */
 export function FeedList({ feed }: FeedListProps) {
   const { session } = useSession();
@@ -51,6 +134,11 @@ export function FeedList({ feed }: FeedListProps) {
           {feed.deleteError}
         </p>
       ) : null}
+      {feed.likeError !== null ? (
+        <p role="alert" className="text-sm text-destructive">
+          {feed.likeError}
+        </p>
+      ) : null}
       {feed.error === null && feed.tweets.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No posts yet — be the first to share something.
@@ -59,43 +147,9 @@ export function FeedList({ feed }: FeedListProps) {
       <ul className="flex flex-col gap-3">
         {feed.tweets.map((tweet) => {
           const own = meId !== undefined && tweet.author.id === meId;
-          const deleting = feed.pendingDeleteId === tweet.id;
           return (
             <li key={tweet.id}>
-              <Card className="py-3">
-                <CardContent className="flex flex-col gap-1">
-                  <p className="text-sm font-medium">
-                    {tweet.author.displayName}{" "}
-                    <span className="font-normal text-muted-foreground">
-                      @{tweet.author.username}
-                    </span>
-                  </p>
-                  <p className="text-sm break-words">{tweet.text}</p>
-                  <div className="flex items-center justify-between gap-2">
-                    <time
-                      dateTime={tweet.createdAt}
-                      className="text-xs text-muted-foreground"
-                    >
-                      {new Date(tweet.createdAt).toLocaleString()}
-                    </time>
-                    {own ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        disabled={deleting}
-                        onClick={() => {
-                          void feed.removeTweet(tweet.id).catch(() => {});
-                        }}
-                        aria-label={`Delete post by @${tweet.author.username}`}
-                      >
-                        <Trash2Icon data-icon="inline-start" />
-                        {deleting ? "Deleting…" : "Delete"}
-                      </Button>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
+              <TweetCard tweet={tweet} own={own} feed={feed} />
             </li>
           );
         })}

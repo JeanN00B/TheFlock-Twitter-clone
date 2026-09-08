@@ -38,6 +38,7 @@ function fakeGateway(overrides?: Partial<BackendGateway>): BackendGateway {
     profile: () => Promise.reject(new Error("not stubbed")),
     setFollow: () => Promise.reject(new Error("not stubbed")),
     searchUsers: () => Promise.reject(new Error("not stubbed")),
+    setLike: () => Promise.reject(new Error("not stubbed")),
     ...overrides,
   };
 }

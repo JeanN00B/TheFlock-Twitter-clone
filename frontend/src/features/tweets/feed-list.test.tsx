@@ -14,6 +14,8 @@ const aliceTweet: Tweet = {
   text: "alice post",
   createdAt: "2024-02-01T00:00:00.000Z",
   author: { id: "u-alice", username: "alice", displayName: "Alice" },
+  likeCount: 0,
+  likedByActor: false,
 };
 
 const bobTweet: Tweet = {
@@ -21,6 +23,8 @@ const bobTweet: Tweet = {
   text: "bob post",
   createdAt: "2024-01-01T00:00:00.000Z",
   author: { id: "u-bob", username: "bob", displayName: "Bob" },
+  likeCount: 2,
+  likedByActor: false,
 };
 
 function stubFeed(overrides: Partial<UseFeedResult> = {}): UseFeedResult {
@@ -37,6 +41,9 @@ function stubFeed(overrides: Partial<UseFeedResult> = {}): UseFeedResult {
     removeTweet: vi.fn(),
     deleteError: null,
     pendingDeleteId: null,
+    setTweetLike: vi.fn(),
+    likeError: null,
+    pendingLikeId: null,
     ...overrides,
   };
 }
@@ -177,5 +184,26 @@ describe("FeedList (P2)", () => {
       "You can only delete your own posts.",
     );
     expect(screen.getByText("alice post")).toBeInTheDocument();
+  });
+
+  it("navigates to the author profile when the alias is activated", () => {
+    renderList(stubFeed({ tweets: [bobTweet] }));
+
+    screen.getByRole("button", { name: /view @bob's profile/i }).click();
+    expect(push).toHaveBeenCalledWith("/profile/bob");
+  });
+
+  it("toggles like without navigating away", () => {
+    const setTweetLike = vi.fn().mockResolvedValue(undefined);
+    renderList(
+      stubFeed({
+        tweets: [bobTweet],
+        setTweetLike,
+      }),
+    );
+
+    screen.getByRole("button", { name: /like post by @bob/i }).click();
+    expect(setTweetLike).toHaveBeenCalledWith(bobTweet.id, true);
+    expect(push).not.toHaveBeenCalled();
   });
 });

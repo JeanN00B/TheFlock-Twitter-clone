@@ -408,6 +408,8 @@ describe("useFeed (P2)", () => {
                 username: "bob",
                 display_name: "Bob",
               },
+              like_count: 0,
+              liked_by_actor: false,
             },
           ],
           next_cursor: null,
@@ -467,6 +469,8 @@ describe("useFeed (P2)", () => {
                 username: "bob",
                 display_name: "Bob",
               },
+              like_count: 0,
+              liked_by_actor: false,
             },
           ],
           next_cursor: null,
@@ -567,5 +571,27 @@ describe("useFeed (P2)", () => {
     });
 
     expect(result.current.deleteError).toMatch(/already gone/i);
+  });
+
+  it("likes optimistically and commits the authoritative count", async () => {
+    await loginAsAlice();
+    const foreign = __seedTweet({ username: "bob", text: "likeable" });
+
+    const { result } = renderHook(() => useFeed({ pageSize: 10 }), {
+      wrapper,
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tweets[0]?.likedByActor).toBe(false);
+
+    await act(async () => {
+      await result.current.setTweetLike(foreign.id, true);
+    });
+
+    expect(result.current.tweets[0]).toMatchObject({
+      id: foreign.id,
+      likedByActor: true,
+      likeCount: 1,
+    });
+    expect(result.current.likeError).toBeNull();
   });
 });

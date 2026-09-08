@@ -44,6 +44,8 @@ describe("BackendGateway feed seam (P2)", () => {
       text: "nested hello",
       createdAt: expect.stringMatching(/Z$/),
       author: { id: "u-alice", username: "alice", displayName: "alice" },
+      likeCount: 0,
+      likedByActor: false,
     });
   });
 

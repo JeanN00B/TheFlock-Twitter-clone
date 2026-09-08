@@ -182,9 +182,8 @@ function publicUser(account: Account): User {
 }
 
 /**
- * Backend tweet row in the real nested-snake wire shape
- * ({id,text,created_at,author:{id,username,display_name}}), newest-first.
- * Reset per test; login stand-in above untouched.
+ * Backend tweet row in the real nested-snake wire shape. Like fields are
+ * projected per-request from the likes store (actor-relative).
  */
 interface MockTweetRow {
   id: string;
@@ -195,10 +194,26 @@ interface MockTweetRow {
 
 const TWEET_MAX_LENGTH = 280;
 const tweetRows: MockTweetRow[] = [];
+/** tweet id → usernames who liked it */
+const tweetLikes = new Map<string, Set<string>>();
 
 /** Test-only reset for the tweet store. */
 export function __resetTweets(): void {
   tweetRows.length = 0;
+  tweetLikes.clear();
+}
+
+function projectTweet(
+  row: MockTweetRow,
+  sessionUsername: string | null,
+): MockTweetRow & { like_count: number; liked_by_actor: boolean } {
+  const likers = tweetLikes.get(row.id) ?? new Set<string>();
+  return {
+    ...row,
+    like_count: likers.size,
+    liked_by_actor:
+      sessionUsername !== null ? likers.has(sessionUsername) : false,
+  };
 }
 
 /**
@@ -632,7 +647,9 @@ export const handlers = [
       }
       return tweetRows;
     })();
-    const items = scopedRows.slice(offset, offset + pageSize);
+    const items = scopedRows.slice(offset, offset + pageSize).map((row) =>
+      projectTweet(row, username),
+    );
     const nextOffset = offset + pageSize;
     return HttpResponse.json({
       items,
@@ -671,7 +688,7 @@ export const handlers = [
       },
     };
     tweetRows.unshift(row);
-    return HttpResponse.json(row, { status: 201 });
+    return HttpResponse.json(projectTweet(row, username), { status: 201 });
   }),
 
   http.delete("*/tweets/:tweetId", ({ params }) => {
@@ -699,7 +716,66 @@ export const handlers = [
       );
     }
     tweetRows.splice(index, 1);
+    tweetLikes.delete(tweetId);
     return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post("*/tweets/:tweetId/like", ({ params }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    if (!tweetRows.some((row) => row.id === tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    let likers = tweetLikes.get(tweetId);
+    if (likers === undefined) {
+      likers = new Set<string>();
+      tweetLikes.set(tweetId, likers);
+    }
+    likers.add(username);
+    return HttpResponse.json({
+      tweet_id: tweetId,
+      like_count: likers.size,
+      liked_by_actor: true,
+    });
+  }),
+
+  http.delete("*/tweets/:tweetId/like", ({ params }) => {
+    const { username, response } = requireSession();
+    if (response !== null) return response;
+    if (username === null) throw new Error("unreachable");
+    const tweetId = String(params.tweetId ?? "");
+    if (!UUID_V4_PATTERN.test(tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "validation_error", fields: { tweet_id: "invalid" } } },
+        { status: 422 },
+      );
+    }
+    if (!tweetRows.some((row) => row.id === tweetId)) {
+      return HttpResponse.json(
+        { error: { code: "not_found" } },
+        { status: 404 },
+      );
+    }
+    const likers = tweetLikes.get(tweetId) ?? new Set<string>();
+    likers.delete(username);
+    if (likers.size === 0) tweetLikes.delete(tweetId);
+    else tweetLikes.set(tweetId, likers);
+    return HttpResponse.json({
+      tweet_id: tweetId,
+      like_count: likers.size,
+      liked_by_actor: false,
+    });
   }),
 
   /**
