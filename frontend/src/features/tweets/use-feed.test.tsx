@@ -218,24 +218,6 @@ describe("useFeed (P2)", () => {
     expect(result.current.hasMore).toBe(false);
   });
 
-  it("post prepends the created tweet for the inline composer", async () => {
-    await loginAsAlice();
-
-    const { result } = renderHook(() => useFeed({ pageSize: 10 }), {
-      wrapper,
-    });
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    let createdId = "";
-    await act(async () => {
-      const created = await result.current.post("fresh");
-      createdId = created.id;
-    });
-
-    expect(result.current.tweets[0]?.text).toBe("fresh");
-    expect(result.current.tweets[0]?.id).toBe(createdId);
-  });
-
   it("delete removes optimistically and commits on 204", async () => {
     await loginAsAlice();
     const gateway = createBackendGateway(BASE_URL);

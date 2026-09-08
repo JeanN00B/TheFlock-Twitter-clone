@@ -68,9 +68,8 @@ function ComposerDialog({ open, onOpenChange, onPosted }: ComposerDialogProps) {
   }
 
   return (
-    <Dialog
-      open={open} onOpenChange={onOpenChange}>
-      <DialogContent >
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>New post</DialogTitle>
         </DialogHeader>

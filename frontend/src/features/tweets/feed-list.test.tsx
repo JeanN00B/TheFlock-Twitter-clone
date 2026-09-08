@@ -34,7 +34,6 @@ function stubFeed(overrides: Partial<UseFeedResult> = {}): UseFeedResult {
     loadMoreError: null,
     loadMore: vi.fn(),
     sentinelRef: vi.fn(),
-    post: vi.fn(),
     removeTweet: vi.fn(),
     deleteError: null,
     pendingDeleteId: null,

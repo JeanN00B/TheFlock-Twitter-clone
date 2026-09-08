@@ -7,6 +7,7 @@ import { useSession } from "@/features/auth/session-store";
 import { useComposer } from "@/features/tweets/composer-dialog";
 import { FeedList } from "@/features/tweets/feed-list";
 import { useFeed } from "@/features/tweets/use-feed";
+import type { User } from "@/lib/api/port";
 
 /** Same display-name initials as the shell account footer. */
 function initialsFor(displayName: string, username: string): string {
@@ -19,8 +20,6 @@ function initialsFor(displayName: string, username: string): string {
   if (fromName) return fromName.toUpperCase();
   return username.slice(0, 2).toUpperCase();
 }
-
-import type { User } from "@/lib/api/port";
 
 function MyProfileContent({ user }: { user: User }) {
   const feed = useFeed();

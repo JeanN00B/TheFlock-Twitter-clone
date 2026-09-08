@@ -19,7 +19,7 @@ interface TweetBoxProps {
   /** Posts the text (hook-owned); resolves on success, rejects ApiError. */
   onPost: (text: string) => Promise<unknown>;
   className?: string;
-  /** Label/textarea id; override when two composers share a page (Dialog). */
+  /** Label/textarea id; override when a second instance shares the DOM. */
   id?: string;
 }
 
@@ -80,7 +80,7 @@ export function TweetBox({ onPost, className, id = "tweet-composer" }: TweetBoxP
               {text.length} / {TWEET_MAX_LENGTH}
             </span>
             <Button type="submit" disabled={!postable}>
-              <SendIcon />
+              <SendIcon data-icon="inline-start" />
               {pending ? "Posting…" : "Post"}
             </Button>
           </div>

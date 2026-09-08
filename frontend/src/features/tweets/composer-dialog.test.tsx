@@ -83,27 +83,54 @@ describe("global composer dialog (Fix-2)", () => {
   });
 
   it("dialog post closes, toasts, and appears in the feed", async () => {
+    // Merged from the removed inline composer: the fetch spy proves the
+    // single post path still rides the cookie session (credentials include,
+    // never Authorization). The spy starts after seeding so only the
+    // dialog POST is counted.
     await loginAsAlice();
     const gateway = createBackendGateway(BASE_URL);
     await gateway.createTweet({ text: "older post" });
-    seedSessionMirror();
-    renderShellHome();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async (input: Parameters<typeof fetch>[0], init) => {
+          calls.push({ url: String(input), init });
+          return realFetch(input, init);
+        },
+      );
+    try {
+      seedSessionMirror();
+      renderShellHome();
 
-    expect(await screen.findByText("older post")).toBeInTheDocument();
-    const dialog = await openComposer();
+      expect(await screen.findByText("older post")).toBeInTheDocument();
+      const dialog = await openComposer();
 
-    fireEvent.change(within(dialog).getByLabelText(/what's happening/i), {
-      target: { value: "dialog fresh post" },
-    });
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /^post$/i }),
-    );
+      fireEvent.change(within(dialog).getByLabelText(/what's happening/i), {
+        target: { value: "dialog fresh post" },
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: /^post$/i }),
+      );
 
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    expect(await screen.findByText("dialog fresh post")).toBeInTheDocument();
-    expect(await screen.findByText("Posted")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(await screen.findByText("dialog fresh post")).toBeInTheDocument();
+      expect(await screen.findByText("Posted")).toBeInTheDocument();
+      const posts = calls.filter(
+        (call) =>
+          call.url.includes("/tweets") && call.init?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.init?.credentials).toBe("include");
+      expect(
+        new Headers(posts[0]?.init?.headers).get("authorization"),
+      ).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("over-limit text stays blocked in the dialog (no POST)", async () => {
@@ -130,6 +157,7 @@ describe("global composer dialog (Fix-2)", () => {
       expect(
         within(dialog).getByRole("button", { name: /^post$/i }),
       ).toBeDisabled();
+      expect(within(dialog).getByText("281 / 280")).toBeInTheDocument();
       expect(posts).toHaveLength(0);
     } finally {
       vi.restoreAllMocks();

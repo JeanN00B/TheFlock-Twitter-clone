@@ -20,8 +20,6 @@ export interface UseFeedResult {
   loadMore: () => void;
   /** Attach to the sentinel row: IntersectionObserver auto-pages. */
   sentinelRef: (node: HTMLElement | null) => void;
-  /** Post through the inline composer path; prepends the created tweet. */
-  post: (text: string) => Promise<Tweet>;
   /** Optimistic delete: 204 commits, 403/404/422 roll back with copy. */
   removeTweet: (id: string) => Promise<void>;
   deleteError: string | null;
@@ -37,9 +35,11 @@ function deleteCopy(status: number): string {
 /**
  * P2 shared feed hook (deep module): owns cursor paging, the
  * single-flight guard, and the sentinel observer. Home renders through
- * this; my-profile reuses it with an author filter in a later slice.
- * Auth failures need no handling here — the fetch adapter clears the
- * session and routes to /login centrally on any 401.
+ * this; my-profile reuses it with an author filter on the loaded rows.
+ * New posts arrive via the global composer Dialog's posted-token reload —
+ * this hook owns no post path. Auth failures need no handling here — the
+ * fetch adapter clears the session and routes to /login centrally on
+ * any 401.
  */
 export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   const { gateway } = useApp();
@@ -155,15 +155,6 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     setReloadToken((token) => token + 1);
   }, []);
 
-  const post = useCallback(
-    async (text: string): Promise<Tweet> => {
-      const created = await gateway.createTweet({ text });
-      setTweets((prev) => [created, ...prev]);
-      return created;
-    },
-    [gateway],
-  );
-
   const removeTweet = useCallback(
     async (id: string): Promise<void> => {
       const snapshot = tweetsRef.current;
@@ -196,7 +187,6 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     loadMoreError,
     loadMore,
     sentinelRef,
-    post,
     removeTweet,
     deleteError,
     pendingDeleteId,
