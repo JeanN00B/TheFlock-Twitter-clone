@@ -12,6 +12,7 @@ from app.tweets.application.create_tweet import CreateTweet, CreateTweetCommand
 from app.tweets.application.delete_tweet import DeleteTweet, DeleteTweetCommand
 from app.tweets.application.errors import InvalidFeedCursor, TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQuery
+from app.tweets.application.ports import FeedKind, FeedScope
 from app.tweets.domain.tweet import PublicTweet
 from app.tweets.infrastructure.cursor import decode_cursor, encode_cursor
 from app.users.domain.user import PublicUser
@@ -87,6 +88,24 @@ def build_tweet_router(
         _actor: PublicUser = Depends(current_user_dependency),
         use_case: ListTweetFeed = Depends(list_provider),
     ) -> TweetFeedResponse | JSONResponse:
+        feeds = request.query_params.getlist("feed")
+        usernames = request.query_params.getlist("username")
+        if len(feeds) > 1 or (feeds and feeds[0] not in {kind.value for kind in FeedKind}):
+            return _validation_response({"feed": "invalid"})
+        feed = feeds[0] if feeds else FeedKind.ALL.value
+        if len(usernames) > 1:
+            return _validation_response({"username": "invalid"})
+        username = usernames[0] if usernames else None
+        if feed == FeedKind.PROFILE.value:
+            try:
+                scope = FeedScope(FeedKind.PROFILE, username)
+            except ValueError:
+                return _validation_response({"username": "invalid"})
+        else:
+            if username is not None:
+                return _validation_response({"username": "invalid"})
+            scope = FeedScope(FeedKind(feed))
+
         values = request.query_params.getlist("page_size")
         if not values:
             page_size = 20
@@ -101,10 +120,13 @@ def build_tweet_router(
         if len(cursors) > 1 or (cursors and not cursors[0]):
             return _validation_response({"cursor": "invalid"})
         try:
-            before = decode_cursor(cursors[0]) if cursors else None
+            before = decode_cursor(cursors[0], scope) if cursors else None
         except InvalidFeedCursor:
             return _validation_response({"cursor": "invalid"})
-        page = use_case.execute(ListTweetFeedQuery(page_size, before))
+        try:
+            page = use_case.execute(ListTweetFeedQuery(page_size, before, scope))
+        except TweetValidationError as error:
+            return _validation_response(error.fields)
         return TweetFeedResponse(
             items=[_to_response(item) for item in page.items],
             next_cursor=encode_cursor(page.next_cursor) if page.next_cursor else None,

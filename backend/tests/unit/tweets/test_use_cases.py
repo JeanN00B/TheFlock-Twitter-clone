@@ -7,7 +7,7 @@ from app.tweets.application.create_tweet import CreateTweet, CreateTweetCommand
 from app.tweets.application.delete_tweet import DeleteTweet, DeleteTweetCommand
 from app.tweets.application.errors import TweetForbidden, TweetNotFound, TweetValidationError
 from app.tweets.application.list_tweet_feed import ListTweetFeed, ListTweetFeedQuery
-from app.tweets.application.ports import DeleteOutcome, FeedCursor
+from app.tweets.application.ports import DeleteOutcome, FeedCursor, FeedKind, FeedScope
 from app.tweets.domain.tweet import PublicAuthorSummary, PublicTweet, Tweet
 
 
@@ -123,6 +123,30 @@ def test_two_creations_generate_distinct_ids() -> None:
     assert use_case.execute(command("second")).id == ID_2
     assert ids.calls == clock.calls == 2
     assert len(repository.added) == 2
+
+
+def test_feed_kinds_and_scope_tokens_are_typed_and_canonical() -> None:
+    assert [kind.value for kind in FeedKind] == ["all", "following", "profile"]
+    assert FeedScope(FeedKind.ALL).token == "all"
+    assert FeedScope(FeedKind.FOLLOWING).token == "following"
+    assert FeedScope(FeedKind.PROFILE, "alice_42").token == "profile:alice_42"
+    for invalid in ("Alice", " alice", "ab", "alice-42"):
+        with pytest.raises(ValueError):
+            FeedScope(FeedKind.PROFILE, invalid)
+
+
+def test_list_rejects_scope_mismatch_and_unavailable_personal_scopes_before_query() -> None:
+    repository = RecordingRepository()
+    all_scope = FeedScope(FeedKind.ALL)
+    following = FeedScope(FeedKind.FOLLOWING)
+    boundary = FeedCursor(created_at=NOW, tweet_id=ID_1, scope=following)
+    with pytest.raises(TweetValidationError) as raised:
+        ListTweetFeed(repository).execute(ListTweetFeedQuery(scope=all_scope, before=boundary))
+    assert raised.value.fields == {"cursor": "invalid"}
+    with pytest.raises(TweetValidationError) as raised:
+        ListTweetFeed(repository).execute(ListTweetFeedQuery(scope=following))
+    assert raised.value.fields == {"feed": "invalid"}
+    assert repository.list_calls == []
 
 
 @pytest.mark.parametrize("page_size", [1, 50])

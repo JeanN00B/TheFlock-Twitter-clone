@@ -1,5 +1,7 @@
 """Live PostgreSQL HTTP evidence for authenticated tweet creation."""
 
+import base64
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -189,6 +191,59 @@ def test_feed_is_global_tied_order_exact_and_one_joined_query(client: TestClient
     assert all(set(item["author"]) == {"id", "username", "display_name"} for item in body["items"])
     assert body["next_cursor"] is None
     assert sum("FROM tweets JOIN users" in " ".join(statement.split()) for statement in statements) == 1
+
+
+def test_omitted_and_explicit_all_are_equivalent_and_emit_scope_bound_v2(client: TestClient) -> None:
+    _register_and_login(client)
+    for index in range(2):
+        assert client.post("/tweets", json={"text": f"global-{index}"}).status_code == 201
+
+    omitted = client.get("/tweets?page_size=1")
+    explicit = client.get("/tweets?feed=all&page_size=1")
+
+    assert omitted.status_code == explicit.status_code == 200
+    assert omitted.json() == explicit.json()
+    cursor = omitted.json()["next_cursor"]
+    payload = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    assert list(payload) == ["v", "feed", "created_at", "id"]
+    assert payload["v"] == 2
+    assert payload["feed"] == "all"
+
+
+@pytest.mark.parametrize(
+    ("query", "field"),
+    [
+        ("feed=", "feed"), ("feed=ALL", "feed"), ("feed=%20all", "feed"),
+        ("feed=unknown", "feed"), ("feed=mine", "feed"),
+        ("feed=all&feed=all", "feed"), ("username=alice", "username"),
+        ("feed=all&username=alice", "username"),
+        ("feed=following&username=alice", "username"),
+        ("feed=profile", "username"), ("feed=profile&username=Alice", "username"),
+        ("feed=profile&username=alice&username=bob", "username"),
+    ],
+)
+def test_feed_scope_parser_rejects_invalid_or_ambiguous_input_before_tweet_io(
+    client: TestClient, query: str, field: str
+) -> None:
+    _register_and_login(client)
+    statements: list[str] = []
+    app_engine = get_engine()
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+    event.listen(app_engine, "before_cursor_execute", record)
+    try:
+        response = client.get(f"/tweets?{query}")
+    finally:
+        event.remove(app_engine, "before_cursor_execute", record)
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": "validation_error", "fields": {field: "invalid"}}}
+    assert not any("FROM tweets" in " ".join(statement.split()) for statement in statements)
+
+
+def test_valid_personal_scopes_remain_unavailable_until_membership_work_unit(client: TestClient) -> None:
+    _register_and_login(client)
+    assert client.get("/tweets?feed=following").status_code == 422
+    assert client.get("/tweets?feed=profile&username=tweet_author").status_code == 422
 
 
 def test_feed_cursor_survives_deleted_boundary_newer_insert_and_page_size_change(client: TestClient, runtime) -> None:

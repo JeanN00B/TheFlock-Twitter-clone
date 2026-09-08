@@ -5,7 +5,7 @@ class TweetValidationError(Exception):
     """Invalid public input represented only by field names."""
 
     def __init__(self, fields: set[str] | dict[str, object]) -> None:
-        allowed = {"text", "page_size", "cursor", "tweet_id", "body"}
+        allowed = {"text", "page_size", "cursor", "tweet_id", "body", "feed", "username"}
         names = set(fields)
         if not names or not names <= allowed:
             raise ValueError("invalid tweet validation fields")

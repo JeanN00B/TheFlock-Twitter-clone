@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from app.tweets.application.errors import TweetValidationError
-from app.tweets.application.ports import FeedCursor, TweetRepository
+from app.tweets.application.ports import FeedCursor, FeedKind, FeedScope, TweetRepository
 from app.tweets.domain.tweet import PublicTweet
 
 
@@ -11,6 +11,7 @@ from app.tweets.domain.tweet import PublicTweet
 class ListTweetFeedQuery:
     page_size: int = 20
     before: FeedCursor | None = None
+    scope: FeedScope = FeedScope(FeedKind.ALL)
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,12 @@ class ListTweetFeed:
     def execute(self, query: ListTweetFeedQuery) -> TweetPage:
         if type(query.page_size) is not int or not 1 <= query.page_size <= 50:
             raise TweetValidationError({"page_size"})
+        if type(query.scope) is not FeedScope:
+            raise TweetValidationError({"feed"})
+        if query.before is not None and query.before.scope != query.scope:
+            raise TweetValidationError({"cursor"})
+        if query.scope.kind is not FeedKind.ALL:
+            raise TweetValidationError({"feed"})
         rows = self._repository.list_active(query.before, query.page_size + 1)
         has_more = len(rows) > query.page_size
         items = rows[: query.page_size]
