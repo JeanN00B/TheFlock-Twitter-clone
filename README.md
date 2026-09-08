@@ -46,6 +46,23 @@ Run the full stack with Docker — no local Postgres or Node needed.
 
 4. Open frontend `http://localhost:3000` and backend health `http://localhost:8000/health`.
 
+## Seed demo data
+
+Default (Docker, recommended):
+
+```bash
+docker compose -f docker-compose.dev.yml --profile seed run --rm twitter-seed
+```
+
+This registers 10 demo users (`user1`–`user10`, passwords `userNpassword`), posts 50 tweets, builds a deterministic follow graph, and cross-likes 3–6 tweets per user. Rerunning `tweets` posts 50 more tweets (the API mints new IDs); follows and likes are idempotent and safe to rerun. See `backend/scripts/seed/README.md`.
+
+Local alternative:
+
+```bash
+cd backend
+uv run python -m scripts.seed all --base-url http://localhost:8000
+```
+
 
 ## Disposable PostgreSQL test runbook
 
