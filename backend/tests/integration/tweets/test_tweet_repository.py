@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from app.auth.infrastructure.session_model import SessionModel  # noqa: E402
 from app.tweets.application.ports import DeleteOutcome, FeedCursor  # noqa: E402
 from app.tweets.domain.tweet import Tweet  # noqa: E402
+from app.tweets.infrastructure.tweet_like_model import TweetLikeModel  # noqa: E402
 from app.tweets.infrastructure.tweet_model import TweetModel  # noqa: E402
 from app.tweets.infrastructure.tweet_repository import SQLAlchemyTweetRepository  # noqa: E402
 from app.users.infrastructure.user_model import UserModel  # noqa: E402
@@ -67,6 +68,7 @@ def engine():
 
 
 def _clean(session: Session) -> None:
+    session.execute(delete(TweetLikeModel))
     session.execute(delete(TweetModel))
     session.execute(delete(SessionModel))
     session.execute(delete(UserModel))

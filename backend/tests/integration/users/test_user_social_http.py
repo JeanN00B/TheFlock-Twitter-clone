@@ -286,12 +286,13 @@ def live_social_runtime(monkeypatch: pytest.MonkeyPatch):
 
     from alembic import command as alembic_command
     from alembic.config import Config as AlembicConfig
-    from sqlalchemy import delete
+    from sqlalchemy import delete, inspect
     from sqlalchemy.orm import Session
 
     from app.auth.infrastructure.session_model import SessionModel
     from app.core.settings import get_settings
     from app.infrastructure.database import get_engine, get_session_factory
+    from app.tweets.infrastructure.tweet_like_model import TweetLikeModel
     from app.tweets.infrastructure.tweet_model import TweetModel
     from app.users.infrastructure.follow_relationship_model import FollowRelationshipModel
     from app.users.infrastructure.user_model import UserModel
@@ -321,6 +322,8 @@ def live_social_runtime(monkeypatch: pytest.MonkeyPatch):
 
     def clear() -> None:
         with Session(engine) as session:
+            if inspect(engine).has_table("tweet_likes"):
+                session.execute(delete(TweetLikeModel))
             session.execute(delete(FollowRelationshipModel))
             session.execute(delete(TweetModel))
             session.execute(delete(SessionModel))

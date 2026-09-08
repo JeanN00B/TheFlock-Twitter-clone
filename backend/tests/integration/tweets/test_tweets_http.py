@@ -36,6 +36,7 @@ from app.auth.infrastructure.session_model import SessionModel  # noqa: E402
 from app.core.settings import get_settings  # noqa: E402
 from app.infrastructure.database import get_engine, get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
+from app.tweets.infrastructure.tweet_like_model import TweetLikeModel  # noqa: E402
 from app.tweets.infrastructure.tweet_model import TweetModel  # noqa: E402
 from app.users.infrastructure.follow_relationship_model import (  # noqa: E402
     FollowRelationshipModel,
@@ -53,6 +54,7 @@ def _alembic_config() -> AlembicConfig:
 
 def _clear_rows(engine) -> None:
     with Session(engine) as session:
+        session.execute(delete(TweetLikeModel))
         session.execute(delete(FollowRelationshipModel))
         session.execute(delete(TweetModel))
         session.execute(delete(SessionModel))
